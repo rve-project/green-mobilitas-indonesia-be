@@ -133,7 +133,9 @@ export interface PaketItem {
   itemId: string;
   satuan?: string;
   qty: number;
+  diskonTipe?: "persen" | "rupiah";
   diskonPersen: number;
+  diskonRp?: number;
 }
 
 export interface Paket {

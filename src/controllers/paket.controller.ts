@@ -19,7 +19,9 @@ function normalizeItems(items: unknown): PaketItem[] {
       itemId: item.itemId,
       satuan: item.satuan || undefined,
       qty: Number(item.qty) || 1,
+      diskonTipe: item.diskonTipe === "rupiah" ? "rupiah" : "persen",
       diskonPersen: Number(item.diskonPersen) || 0,
+      diskonRp: Number(item.diskonRp) || 0,
     };
   });
 }

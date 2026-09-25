@@ -155,7 +155,22 @@ export const barangController = {
   },
 
   async update(req: Request, res: Response) {
-    const item = await store.update(String(req.params.id), req.body);
+    const { units, ...rest } = req.body;
+    // satuan/hargaBeli/hargaJual are denormalized copies of the default unit (see create)
+    // that the list, paket pricing, and invoices read -- re-derive them whenever units
+    // change, or edited prices never show up anywhere outside the unit table.
+    let unitPatch = {};
+    if (units !== undefined) {
+      const normalizedUnits = normalizeUnits(units);
+      const defaultUnit = normalizedUnits.find((u) => u.isDefault) ?? normalizedUnits[0];
+      unitPatch = {
+        units: normalizedUnits,
+        satuan: defaultUnit.satuan,
+        hargaBeli: defaultUnit.hargaBeli,
+        hargaJual: defaultUnit.hargaJual,
+      };
+    }
+    const item = await store.update(String(req.params.id), { ...rest, ...unitPatch });
     if (!item) throw new ApiError(404, "Barang tidak ditemukan");
     res.json(item);
   },

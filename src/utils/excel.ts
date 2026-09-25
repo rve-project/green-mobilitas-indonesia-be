@@ -44,6 +44,14 @@ export function buildExportWorkbook(sheetName: string, headers: string[], rows: 
   return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
 }
 
+export function buildMultiSheetWorkbook(sheets: { name: string; headers: string[]; rows: (string | number)[][] }[]): Buffer {
+  const workbook = XLSX.utils.book_new();
+  for (const sheet of sheets) {
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([sheet.headers, ...sheet.rows]), sheet.name);
+  }
+  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
+}
+
 export function sendXlsx(res: Response, buffer: Buffer, filename: string) {
   res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);

@@ -8,6 +8,7 @@ export const stokOpnameRouter = Router();
 stokOpnameRouter.use(requireAuth, requireRole(...MODULE_ROLES["manajemen-stok"]));
 
 stokOpnameRouter.get("/", stokOpnameController.list);
+stokOpnameRouter.get("/export", stokOpnameController.exportXlsx);
 stokOpnameRouter.get("/:id", stokOpnameController.get);
 stokOpnameRouter.post("/", stokOpnameController.create);
 stokOpnameRouter.delete("/:id", stokOpnameController.remove);

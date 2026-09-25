@@ -4,6 +4,7 @@ import { generateKode } from "../utils/kodeGenerator";
 import { Satuan, StokOpname, StokOpnameItem } from "../models/types";
 import { ApiError } from "../middlewares/errorHandler";
 import { barangStore } from "./barang.controller";
+import { buildMultiSheetWorkbook, sendXlsx } from "../utils/excel";
 
 export const stokOpnameStore = new SqliteStore<StokOpname>("stok_opname");
 const store = stokOpnameStore;
@@ -55,6 +56,10 @@ async function applyAdjustments(lokasi: string, items: StokOpnameItem[]) {
   }
 }
 
+function formatTanggal(iso: string) {
+  return new Date(iso).toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", day: "2-digit", month: "long", year: "numeric" });
+}
+
 export const stokOpnameController = {
   async list(_req: Request, res: Response) {
     res.json(await store.findAll());
@@ -86,6 +91,35 @@ export const stokOpnameController = {
       createdAt: new Date().toISOString(),
     });
     res.status(201).json(item);
+  },
+
+  // Same filters as the Stok Opname list page (period in days + kode/lokasi search), so
+  // the file matches what the user is looking at.
+  async exportXlsx(req: Request, res: Response) {
+    const days = Number(req.query.days) || 36500;
+    const q = typeof req.query.search === "string" ? req.query.search.trim().toLowerCase() : "";
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    const sessions = (await store.findAll())
+      .filter((s) => new Date(s.tanggal).getTime() >= cutoff)
+      .filter((s) => !q || s.kode.toLowerCase().includes(q) || s.lokasi.toLowerCase().includes(q))
+      .sort((a, b) => new Date(b.tanggal).getTime() - new Date(a.tanggal).getTime());
+
+    const buffer = buildMultiSheetWorkbook([
+      {
+        name: "Ringkasan",
+        headers: ["Kode", "Tanggal", "Lokasi", "Jumlah Item", "Item Selisih", "Catatan"],
+        rows: sessions.map((s) => [s.kode, formatTanggal(s.tanggal), s.lokasi, s.items.length, s.totalSelisihItem, s.catatan ?? ""]),
+      },
+      {
+        name: "Detail",
+        headers: ["Kode Opname", "Tanggal", "Lokasi", "Kode Barang", "Nama Barang", "Satuan", "Stok Sistem", "Stok Fisik", "Selisih"],
+        rows: sessions.flatMap((s) =>
+          s.items.map((i) => [s.kode, formatTanggal(s.tanggal), s.lokasi, i.kode, i.nama, i.satuan, i.stokSistem, i.stokFisik, i.selisih])
+        ),
+      },
+    ]);
+    sendXlsx(res, buffer, "stok-opname.xlsx");
   },
 
   async remove(req: Request, res: Response) {

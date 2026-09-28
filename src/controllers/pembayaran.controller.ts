@@ -12,9 +12,10 @@ export const pembayaranController = {
   },
 
   async create(req: Request, res: Response) {
-    const { invoiceId, tanggal, jumlah, metode } = req.body;
+    const { invoiceId, tanggal, jumlah, metode, catatan } = req.body;
     if (!invoiceId || !jumlah) throw new ApiError(400, "invoiceId dan jumlah wajib diisi");
     const jumlahNum = Number(jumlah);
+    if (!(jumlahNum > 0)) throw new ApiError(400, "jumlah harus lebih dari 0");
 
     const invoiceExists = await invoiceStore.findById(invoiceId);
     if (!invoiceExists) throw new ApiError(400, `Invoice dengan id ${invoiceId} tidak ditemukan`);
@@ -24,6 +25,7 @@ export const pembayaranController = {
       tanggal: tanggal || new Date().toISOString(),
       jumlah: jumlahNum,
       metode,
+      catatan: catatan || undefined,
       createdAt: new Date().toISOString(),
     });
 
@@ -37,6 +39,39 @@ export const pembayaranController = {
     });
 
     res.status(201).json(item);
+  },
+
+  async update(req: Request, res: Response) {
+    const existing = await store.findById(String(req.params.id));
+    if (!existing) throw new ApiError(404, "Pembayaran tidak ditemukan");
+
+    const { tanggal, jumlah, metode, catatan } = req.body;
+    const patch: Partial<Pembayaran> = {};
+    if (tanggal !== undefined) patch.tanggal = tanggal;
+    if (metode !== undefined) patch.metode = metode;
+    if (catatan !== undefined) patch.catatan = catatan || undefined;
+
+    let jumlahBaru = existing.jumlah;
+    if (jumlah !== undefined) {
+      jumlahBaru = Number(jumlah);
+      if (!(jumlahBaru > 0)) throw new ApiError(400, "jumlah harus lebih dari 0");
+      patch.jumlah = jumlahBaru;
+    }
+
+    const delta = jumlahBaru - existing.jumlah;
+    if (delta !== 0) {
+      // Row-locked so the invoice's running `dibayar` total can't be clobbered by a concurrent payment.
+      await invoiceStore.updateWithLock(existing.invoiceId, (current) => {
+        const dibayarBaru = current.dibayar + delta;
+        return {
+          dibayar: dibayarBaru,
+          statusPembayaran: computeStatusPembayaran(invoiceNetTotal(current), dibayarBaru),
+        };
+      });
+    }
+
+    const updated = await store.update(existing.id, patch);
+    res.json(updated);
   },
 
   async remove(req: Request, res: Response) {

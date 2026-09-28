@@ -1,11 +1,10 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middlewares/auth";
-import { MODULE_ROLES } from "../config/permissions";
+import { requireAuth, requireModule } from "../middlewares/auth";
 import { paketController } from "../controllers/paket.controller";
 
 export const paketRouter = Router();
 
-paketRouter.use(requireAuth, requireRole(...MODULE_ROLES["barang-jasa"]));
+paketRouter.use(requireAuth, requireModule("barang-jasa"));
 
 paketRouter.get("/", paketController.list);
 paketRouter.get("/:id", paketController.get);

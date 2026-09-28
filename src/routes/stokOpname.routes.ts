@@ -1,11 +1,10 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middlewares/auth";
-import { MODULE_ROLES } from "../config/permissions";
+import { requireAuth, requireModule } from "../middlewares/auth";
 import { stokOpnameController } from "../controllers/stokOpname.controller";
 
 export const stokOpnameRouter = Router();
 
-stokOpnameRouter.use(requireAuth, requireRole(...MODULE_ROLES["manajemen-stok"]));
+stokOpnameRouter.use(requireAuth, requireModule("manajemen-stok"));
 
 stokOpnameRouter.get("/", stokOpnameController.list);
 stokOpnameRouter.get("/export", stokOpnameController.exportXlsx);

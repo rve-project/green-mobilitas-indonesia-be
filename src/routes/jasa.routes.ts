@@ -1,12 +1,11 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middlewares/auth";
-import { MODULE_ROLES } from "../config/permissions";
+import { requireAuth, requireModule } from "../middlewares/auth";
 import { jasaController } from "../controllers/jasa.controller";
 import { uploadXlsx } from "../middlewares/upload";
 
 export const jasaRouter = Router();
 
-jasaRouter.use(requireAuth, requireRole(...MODULE_ROLES["barang-jasa"]));
+jasaRouter.use(requireAuth, requireModule("barang-jasa"));
 
 jasaRouter.get("/template", jasaController.template);
 jasaRouter.get("/export", jasaController.exportXlsx);

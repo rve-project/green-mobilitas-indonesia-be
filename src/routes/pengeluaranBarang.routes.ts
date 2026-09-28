@@ -1,11 +1,10 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middlewares/auth";
-import { MODULE_ROLES } from "../config/permissions";
+import { requireAuth, requireModule } from "../middlewares/auth";
 import { pengeluaranBarangController } from "../controllers/pengeluaranBarang.controller";
 
 export const pengeluaranBarangRouter = Router();
 
-pengeluaranBarangRouter.use(requireAuth, requireRole(...MODULE_ROLES["manajemen-stok"]));
+pengeluaranBarangRouter.use(requireAuth, requireModule("manajemen-stok"));
 
 pengeluaranBarangRouter.get("/", pengeluaranBarangController.list);
 pengeluaranBarangRouter.get("/:id", pengeluaranBarangController.get);

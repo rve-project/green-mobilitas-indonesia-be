@@ -1,11 +1,10 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middlewares/auth";
-import { MODULE_ROLES } from "../config/permissions";
+import { requireAuth, requireModule } from "../middlewares/auth";
 import { karyawanController } from "../controllers/karyawan.controller";
 
 export const karyawanRouter = Router();
 
-karyawanRouter.use(requireAuth, requireRole(...MODULE_ROLES["manajemen-karyawan"]));
+karyawanRouter.use(requireAuth, requireModule("manajemen-karyawan"));
 
 karyawanRouter.get("/", karyawanController.list);
 karyawanRouter.get("/stats", karyawanController.stats);

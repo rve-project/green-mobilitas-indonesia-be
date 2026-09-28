@@ -1,11 +1,10 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middlewares/auth";
-import { MODULE_ROLES } from "../config/permissions";
+import { requireAuth, requireModule } from "../middlewares/auth";
 import { posisiController } from "../controllers/posisi.controller";
 
 export const posisiRouter = Router();
 
-posisiRouter.use(requireAuth, requireRole(...MODULE_ROLES["manajemen-karyawan"]));
+posisiRouter.use(requireAuth, requireModule("manajemen-karyawan"));
 
 posisiRouter.get("/", posisiController.list);
 posisiRouter.get("/:id", posisiController.get);

@@ -1,11 +1,10 @@
 import { Router } from "express";
 import { userController } from "../controllers/user.controller";
-import { requireAuth, requireRole } from "../middlewares/auth";
-import { MODULE_ROLES } from "../config/permissions";
+import { requireAuth, requireModule } from "../middlewares/auth";
 
 export const userRouter = Router();
 
-userRouter.use(requireAuth, requireRole(...MODULE_ROLES["manajemen-user"]));
+userRouter.use(requireAuth, requireModule("manajemen-user"));
 
 userRouter.get("/", userController.list);
 userRouter.get("/:id", userController.get);

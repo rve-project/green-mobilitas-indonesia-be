@@ -1,11 +1,10 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middlewares/auth";
-import { MODULE_ROLES } from "../config/permissions";
+import { requireAuth, requireModule } from "../middlewares/auth";
 import { pemasukanLainController } from "../controllers/pemasukanLain.controller";
 
 export const pemasukanLainRouter = Router();
 
-pemasukanLainRouter.use(requireAuth, requireRole(...MODULE_ROLES["penjualan"]));
+pemasukanLainRouter.use(requireAuth, requireModule("penjualan"));
 
 pemasukanLainRouter.get("/", pemasukanLainController.list);
 pemasukanLainRouter.get("/:id", pemasukanLainController.get);

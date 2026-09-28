@@ -1,11 +1,10 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middlewares/auth";
-import { MODULE_ROLES } from "../config/permissions";
+import { requireAuth, requireModule } from "../middlewares/auth";
 import { companyProfileController, lookupController, pajakController } from "../controllers/pengaturan.controller";
 
 export const pengaturanRouter = Router();
 
-pengaturanRouter.use(requireAuth, requireRole(...MODULE_ROLES["pengaturan"]));
+pengaturanRouter.use(requireAuth, requireModule("pengaturan"));
 
 pengaturanRouter.get("/lookup", lookupController.list);
 pengaturanRouter.post("/lookup", lookupController.create);

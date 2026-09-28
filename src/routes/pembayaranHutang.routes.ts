@@ -1,11 +1,10 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middlewares/auth";
-import { MODULE_ROLES } from "../config/permissions";
+import { requireAuth, requireModule } from "../middlewares/auth";
 import { pembayaranHutangController } from "../controllers/pembayaranHutang.controller";
 
 export const pembayaranHutangRouter = Router();
 
-pembayaranHutangRouter.use(requireAuth, requireRole(...MODULE_ROLES["pembelian"]));
+pembayaranHutangRouter.use(requireAuth, requireModule("pembelian"));
 
 pembayaranHutangRouter.get("/", pembayaranHutangController.list);
 pembayaranHutangRouter.post("/", pembayaranHutangController.create);

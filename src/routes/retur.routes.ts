@@ -1,11 +1,10 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middlewares/auth";
-import { MODULE_ROLES } from "../config/permissions";
+import { requireAuth, requireModule } from "../middlewares/auth";
 import { returController } from "../controllers/retur.controller";
 
 export const returRouter = Router();
 
-returRouter.use(requireAuth, requireRole(...MODULE_ROLES["penjualan"]));
+returRouter.use(requireAuth, requireModule("penjualan"));
 
 returRouter.get("/", returController.list);
 returRouter.get("/:id", returController.get);

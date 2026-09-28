@@ -13,7 +13,8 @@ const store = invoiceStore;
 
 const VALID_STATUS: StatusInvoice[] = ["selesai", "draft", "dibatalkan"];
 
-async function resolveItems(rawItems: unknown): Promise<InvoiceItem[]> {
+/** Validates and builds item snapshots WITHOUT touching stock, so callers can fail before mutating anything. */
+async function buildItems(rawItems: unknown): Promise<InvoiceItem[]> {
   if (!Array.isArray(rawItems) || rawItems.length === 0) {
     throw new ApiError(400, "items tidak boleh kosong");
   }
@@ -45,7 +46,6 @@ async function resolveItems(rawItems: unknown): Promise<InvoiceItem[]> {
     if (input.tipe === "barang") {
       const barang = await barangStore.findById(input.itemId);
       if (!barang) throw new ApiError(400, `Barang dengan id ${input.itemId} tidak ditemukan`);
-      await barangStore.updateWithLock(barang.id, (current) => ({ stok: current.stok - qty }));
       result.push({
         tipe: "barang",
         itemId: barang.id,
@@ -77,6 +77,31 @@ async function resolveItems(rawItems: unknown): Promise<InvoiceItem[]> {
     });
   }
   return result;
+}
+
+async function resolveItems(rawItems: unknown): Promise<InvoiceItem[]> {
+  const result = await buildItems(rawItems);
+  for (const item of result) {
+    if (item.tipe === "barang") {
+      await barangStore.updateWithLock(item.itemId, (current) => ({ stok: current.stok - item.qty }));
+    }
+  }
+  return result;
+}
+
+/** Applies the net stock delta between an invoice's old and new item lists, one lock per affected barang. */
+async function applyStockDelta(oldItems: InvoiceItem[], newItems: InvoiceItem[]) {
+  const deltaQty = new Map<string, number>();
+  for (const old of oldItems) {
+    if (old.tipe === "barang") deltaQty.set(old.itemId, (deltaQty.get(old.itemId) ?? 0) - old.qty);
+  }
+  for (const next of newItems) {
+    if (next.tipe === "barang") deltaQty.set(next.itemId, (deltaQty.get(next.itemId) ?? 0) + next.qty);
+  }
+  for (const [itemId, delta] of deltaQty) {
+    if (delta === 0) continue;
+    await barangStore.updateWithLock(itemId, (current) => ({ stok: current.stok - delta }));
+  }
 }
 
 function roundToNearest(value: number, step: number) {
@@ -187,7 +212,7 @@ export const invoiceController = {
     const existing = await store.findById(String(req.params.id));
     if (!existing) throw new ApiError(404, "Invoice tidak ditemukan");
 
-    const { status, dibayar, ...rest } = req.body;
+    const { status, dibayar, items, potonganPersen, ...rest } = req.body;
     const patch: Partial<Invoice> = { ...rest };
 
     if (status !== undefined) {
@@ -197,9 +222,33 @@ export const invoiceController = {
       patch.status = status;
     }
 
+    let netTotal = invoiceNetTotal(existing);
+
+    if (items !== undefined) {
+      // Validate/build the new item list BEFORE touching any stock, so a bad itemId can't leave stock half-adjusted.
+      const newItems = await buildItems(items);
+      const potongan = potonganPersen !== undefined ? Number(potonganPersen) || 0 : existing.potonganPersen ?? 0;
+      const { subtotal, dpp, pajakPersen, pajak, total } = computeTotals(newItems, potongan, await pajakSettings.get());
+
+      await applyStockDelta(existing.items, newItems);
+
+      patch.items = newItems;
+      patch.potonganPersen = potongan;
+      patch.subtotal = subtotal;
+      patch.dpp = dpp;
+      patch.pajakPersen = pajakPersen;
+      patch.pajak = pajak;
+      patch.total = total;
+      netTotal = Math.max(0, total - (existing.returTotal ?? 0));
+    } else if (potonganPersen !== undefined) {
+      patch.potonganPersen = Number(potonganPersen) || 0;
+    }
+
     if (dibayar !== undefined) {
       patch.dibayar = Number(dibayar) || 0;
-      patch.statusPembayaran = computeStatusPembayaran(invoiceNetTotal(existing), patch.dibayar);
+      patch.statusPembayaran = computeStatusPembayaran(netTotal, patch.dibayar);
+    } else if (items !== undefined) {
+      patch.statusPembayaran = computeStatusPembayaran(netTotal, existing.dibayar);
     }
 
     const item = await store.update(existing.id, patch);
@@ -207,7 +256,24 @@ export const invoiceController = {
   },
 
   async remove(req: Request, res: Response) {
-    const deleted = await store.delete(String(req.params.id));
+    const existing = await store.findById(String(req.params.id));
+    if (!existing) throw new ApiError(404, "Invoice tidak ditemukan");
+
+    if (existing.dibayar > 0) {
+      throw new ApiError(400, "Invoice ini sudah memiliki pembayaran dan tidak bisa dihapus.");
+    }
+    if ((existing.returTotal ?? 0) > 0) {
+      throw new ApiError(400, "Invoice ini memiliki retur penjualan dan tidak bisa dihapus.");
+    }
+
+    // Deleting an unpaid, unreturned invoice reverses its stock deduction so barang counts stay correct.
+    for (const item of existing.items) {
+      if (item.tipe === "barang") {
+        await barangStore.updateWithLock(item.itemId, (current) => ({ stok: current.stok + item.qty }));
+      }
+    }
+
+    const deleted = await store.delete(existing.id);
     if (!deleted) throw new ApiError(404, "Invoice tidak ditemukan");
     res.status(204).send();
   },

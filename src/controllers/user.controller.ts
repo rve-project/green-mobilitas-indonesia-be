@@ -3,6 +3,17 @@ import { SqliteStore } from "../utils/sqliteStore";
 import { PublicUser, User, USER_ROLE_OPTIONS, UserRole } from "../models/types";
 import { ApiError } from "../middlewares/errorHandler";
 import { hashPassword } from "../utils/password";
+import { MODULE_KEYS } from "../config/permissions";
+
+function parseAllowedModules(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new ApiError(400, "allowedModules harus berupa array");
+  const strings = value.map((v) => String(v));
+  const validKeys: readonly string[] = MODULE_KEYS;
+  const invalid = strings.filter((v) => !validKeys.includes(v));
+  if (invalid.length > 0) throw new ApiError(400, `Modul tidak valid: ${invalid.join(", ")}`);
+  return Array.from(new Set(strings));
+}
 
 export const userStore = new SqliteStore<User>("user");
 
@@ -42,7 +53,7 @@ export const userController = {
   },
 
   async create(req: Request, res: Response) {
-    const { nama, email, password, role, aktif } = req.body;
+    const { nama, email, password, role, aktif, allowedModules } = req.body;
     if (!nama || !email || !password) throw new ApiError(400, "nama, email, dan password wajib diisi");
     if (!USER_ROLE_OPTIONS.includes(role)) throw new ApiError(400, "role tidak valid");
     const all = await userStore.findAll();
@@ -54,6 +65,7 @@ export const userController = {
       email,
       passwordHash: hashPassword(password),
       role: role as UserRole,
+      allowedModules: parseAllowedModules(allowedModules),
       aktif: aktif === undefined ? true : Boolean(aktif),
       createdAt: new Date().toISOString(),
     });
@@ -61,12 +73,13 @@ export const userController = {
   },
 
   async update(req: Request, res: Response) {
-    const { password, role, ...rest } = req.body;
+    const { password, role, allowedModules, ...rest } = req.body;
     if (role !== undefined && !USER_ROLE_OPTIONS.includes(role)) {
       throw new ApiError(400, "role tidak valid");
     }
     const patch: Partial<User> = { ...rest };
     if (role !== undefined) patch.role = role as UserRole;
+    if (allowedModules !== undefined) patch.allowedModules = parseAllowedModules(allowedModules);
     if (password) patch.passwordHash = hashPassword(password);
 
     const item = await userStore.update(String(req.params.id), patch);

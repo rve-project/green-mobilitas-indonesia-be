@@ -22,6 +22,7 @@ import { pengeluaranLainRouter } from "./pengeluaranLain.routes";
 import { stokOpnameRouter } from "./stokOpname.routes";
 import { penerimaanBarangRouter } from "./penerimaanBarang.routes";
 import { pengeluaranBarangRouter } from "./pengeluaranBarang.routes";
+import { laporanRouter } from "./laporan.routes";
 import { pengaturanRouter } from "./pengaturan.routes";
 import { authRouter } from "./auth.routes";
 import { userRouter } from "./user.routes";
@@ -56,6 +57,7 @@ apiRouter.use("/pengeluaran-lain", pengeluaranLainRouter);
 apiRouter.use("/stok-opname", stokOpnameRouter);
 apiRouter.use("/penerimaan-barang", penerimaanBarangRouter);
 apiRouter.use("/pengeluaran-barang", pengeluaranBarangRouter);
+apiRouter.use("/laporan", laporanRouter);
 // Readable by any authenticated role (needed to print invoices/receipts); must be registered before
 // pengaturanRouter below, since that router's admin-only gate applies to every "/pengaturan/*" request
 // regardless of whether a matching route exists inside it. Editing stays admin-only via pengaturanRouter.

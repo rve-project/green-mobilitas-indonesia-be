@@ -1,12 +1,11 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middlewares/auth";
-import { MODULE_ROLES } from "../config/permissions";
+import { requireAuth, requireModule } from "../middlewares/auth";
 import { barangController } from "../controllers/barang.controller";
 import { uploadXlsx } from "../middlewares/upload";
 
 export const barangRouter = Router();
 
-barangRouter.use(requireAuth, requireRole(...MODULE_ROLES["barang-jasa"]));
+barangRouter.use(requireAuth, requireModule("barang-jasa"));
 
 barangRouter.get("/template", barangController.template);
 barangRouter.get("/export", barangController.exportXlsx);

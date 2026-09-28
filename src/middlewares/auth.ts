@@ -3,6 +3,7 @@ import { ApiError } from "./errorHandler";
 import { resolveSession } from "../controllers/auth.controller";
 import { userStore } from "../controllers/user.controller";
 import { PublicUser, UserRole } from "../models/types";
+import { canAccessModule, ModuleKey } from "../config/permissions";
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -31,6 +32,16 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
 export function requireRole(...roles: UserRole[]) {
   return (req: Request, _res: Response, next: NextFunction) => {
     if (!req.authUser || !roles.includes(req.authUser.role)) {
+      throw new ApiError(403, "Tidak memiliki akses");
+    }
+    next();
+  };
+}
+
+/** Gate a route by module, honoring a user's per-user `allowedModules` restriction on top of their role. */
+export function requireModule(module: ModuleKey) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    if (!req.authUser || !canAccessModule(req.authUser, module)) {
       throw new ApiError(403, "Tidak memiliki akses");
     }
     next();

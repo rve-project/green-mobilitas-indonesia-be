@@ -23,7 +23,13 @@ async function resolveItems(lokasi: string, rawItems: unknown): Promise<StokOpna
     if (!barang) throw new ApiError(400, `Barang dengan id ${input.itemId} tidak ditemukan`);
 
     const lokasiEntry = barang.stokLokasi.find((sl) => sl.lokasi === lokasi);
-    const stokSistem = lokasiEntry?.jumlah ?? 0;
+    // A barang with zero stokLokasi entries anywhere has never been through location
+    // tracking at all -- its flat `stok` is a real, un-attributed balance (e.g. from a
+    // purchase recorded before this feature existed), not "nothing here yet". Recording
+    // its first-ever location should reconcile against that balance, not silently add on
+    // top of it (which would double-count it). Once a barang has at least one stokLokasi
+    // entry, a genuinely new location for it really does start from zero as before.
+    const stokSistem = lokasiEntry?.jumlah ?? (barang.stokLokasi.length === 0 ? barang.stok : 0);
     const stokFisik = Number(input.stokFisik) || 0;
 
     result.push({

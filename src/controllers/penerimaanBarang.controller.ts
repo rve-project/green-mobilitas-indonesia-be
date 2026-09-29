@@ -120,7 +120,26 @@ export const penerimaanBarangController = {
   },
 
   async remove(req: Request, res: Response) {
-    const deleted = await store.delete(String(req.params.id));
+    const existing = await store.findById(String(req.params.id));
+    if (!existing) throw new ApiError(404, "Penerimaan barang tidak ditemukan");
+
+    // Only a posted receipt ever touched stock (see create/update above) -- a draft never
+    // did, so reversing one would incorrectly subtract stock that was never added.
+    if (existing.status === "terposting") {
+      for (const item of existing.items) {
+        await barangStore.updateWithLock(item.itemId, (current) => {
+          // Dropping a location entry to zero removes it entirely (rather than leaving a
+          // {jumlah: 0} stub) so a barang that's never really been through location
+          // tracking reads that way again, not as "tracked, currently empty here".
+          const stokLokasi = current.stokLokasi
+            .map((sl) => (sl.lokasi === item.lokasi && sl.satuan === item.satuan ? { ...sl, jumlah: sl.jumlah - item.jumlah } : sl))
+            .filter((sl) => sl.jumlah > 0);
+          return { stok: current.stok - item.jumlah, stokLokasi };
+        });
+      }
+    }
+
+    const deleted = await store.delete(existing.id);
     if (!deleted) throw new ApiError(404, "Penerimaan barang tidak ditemukan");
     res.status(204).send();
   },

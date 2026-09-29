@@ -1,6 +1,7 @@
 import { UserRole } from "../models/types";
 
 export const MODULE_LABELS: Record<string, string> = {
+  dashboard: "Beranda",
   "barang-jasa": "Barang & Jasa",
   penjualan: "Penjualan",
   pembelian: "Pembelian",
@@ -14,6 +15,7 @@ export const MODULE_LABELS: Record<string, string> = {
 };
 
 export const MODULE_KEYS = [
+  "dashboard",
   "barang-jasa",
   "penjualan",
   "pembelian",
@@ -33,6 +35,7 @@ export type ModuleKey = (typeof MODULE_KEYS)[number];
  * Mirrored on the frontend at src/lib/permissions.ts — keep both in sync.
  */
 export const MODULE_ROLES: Record<ModuleKey, UserRole[]> = {
+  dashboard: ["superadmin", "admin", "staff"],
   "barang-jasa": ["superadmin", "admin", "staff"],
   penjualan: ["superadmin", "admin", "staff"],
   pembelian: ["superadmin", "admin", "staff"],

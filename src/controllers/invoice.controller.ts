@@ -319,14 +319,13 @@ export const invoiceController = {
     const existing = await store.findById(String(req.params.id));
     if (!existing) throw new ApiError(404, "Invoice tidak ditemukan");
 
-    if (existing.dibayar > 0) {
-      throw new ApiError(400, "Invoice ini sudah memiliki pembayaran dan tidak bisa dihapus.");
-    }
     if ((existing.returTotal ?? 0) > 0) {
       throw new ApiError(400, "Invoice ini memiliki retur penjualan dan tidak bisa dihapus.");
     }
 
-    // Deleting an unpaid, unreturned invoice reverses its stock deduction so barang counts stay correct.
+    // Deleting an invoice reverses its stock deduction so barang counts stay correct, even
+    // if it was already paid -- the payment record itself is left as-is (not deleted), so
+    // it'll look orphaned if the invoice is recreated with a different id.
     for (const item of existing.items) {
       if (item.tipe === "barang") {
         await barangStore.updateWithLock(item.itemId, (current) => ({

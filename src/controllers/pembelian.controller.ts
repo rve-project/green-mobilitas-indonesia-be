@@ -289,14 +289,13 @@ export const pembelianController = {
     const existing = await store.findById(String(req.params.id));
     if (!existing) throw new ApiError(404, "Pembelian tidak ditemukan");
 
-    if (existing.dibayar > 0) {
-      throw new ApiError(400, "Pembelian ini sudah memiliki pembayaran dan tidak bisa dihapus.");
-    }
     if ((existing.returTotal ?? 0) > 0) {
       throw new ApiError(400, "Pembelian ini memiliki retur pembelian dan tidak bisa dihapus.");
     }
 
-    // Deleting an unpaid, unreturned pembelian reverses its stock addition so barang counts stay correct.
+    // Deleting a pembelian reverses its stock addition so barang counts stay correct, even
+    // if it was already paid -- the payment record itself is left as-is (not deleted), so
+    // it'll look orphaned if the pembelian is recreated with a different id.
     for (const item of existing.items) {
       await barangStore.updateWithLock(item.itemId, (current) => ({
         stok: current.stok - item.qty,

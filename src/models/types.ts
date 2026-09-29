@@ -201,6 +201,7 @@ export interface Invoice {
   potonganPersen?: number;
   subtotal?: number;
   dpp?: number;
+  bebasPpn?: boolean;
   pajakPersen?: number;
   pajak?: number;
   total: number;

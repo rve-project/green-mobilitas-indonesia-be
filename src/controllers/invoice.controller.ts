@@ -109,14 +109,14 @@ function roundToNearest(value: number, step: number) {
   return Math.round(value / step) * step;
 }
 
-function computeTotals(items: InvoiceItem[], potonganPersen: number, pajak: PajakSetting) {
+function computeTotals(items: InvoiceItem[], potonganPersen: number, pajak: PajakSetting, bebasPpn: boolean) {
   const subtotal = items.reduce(
     (sum, item) =>
       sum + hitungTotalSetelahDiskon(item.qty * item.hargaSatuan, item.diskonTipe, item.diskonPersen, item.diskonRp ?? 0),
     0
   );
   const dpp = subtotal * (1 - potonganPersen / 100);
-  const pajakPersen = pajak.aktif ? pajak.persentase : 0;
+  const pajakPersen = !bebasPpn && pajak.aktif ? pajak.persentase : 0;
   const pajakNominal = roundToNearest(dpp * (pajakPersen / 100), pajak.pembulatan);
   const total = dpp + pajakNominal;
   return { subtotal, dpp, pajakPersen, pajak: pajakNominal, total };
@@ -159,15 +159,18 @@ export const invoiceController = {
       catatan,
       keluhan,
       potonganPersen,
+      bebasPpn,
     } = req.body;
     if (!pelangganId) throw new ApiError(400, "pelangganId wajib diisi");
 
     const resolvedItems = await resolveItems(items);
     const potongan = Number(potonganPersen) || 0;
+    const isBebasPpn = Boolean(bebasPpn);
     const { subtotal, dpp, pajakPersen, pajak, total } = computeTotals(
       resolvedItems,
       potongan,
-      await pajakSettings.get()
+      await pajakSettings.get(),
+      isBebasPpn
     );
     const paid = Number(dibayar) || 0;
 
@@ -197,6 +200,7 @@ export const invoiceController = {
       potonganPersen: potongan,
       subtotal,
       dpp,
+      bebasPpn: isBebasPpn,
       pajakPersen,
       pajak,
       total,
@@ -212,7 +216,7 @@ export const invoiceController = {
     const existing = await store.findById(String(req.params.id));
     if (!existing) throw new ApiError(404, "Invoice tidak ditemukan");
 
-    const { status, dibayar, items, potonganPersen, ...rest } = req.body;
+    const { status, dibayar, items, potonganPersen, bebasPpn, ...rest } = req.body;
     const patch: Partial<Invoice> = { ...rest };
 
     if (status !== undefined) {
@@ -223,12 +227,18 @@ export const invoiceController = {
     }
 
     let netTotal = invoiceNetTotal(existing);
+    const bebasPpnEfektif = bebasPpn !== undefined ? Boolean(bebasPpn) : existing.bebasPpn ?? false;
 
     if (items !== undefined) {
       // Validate/build the new item list BEFORE touching any stock, so a bad itemId can't leave stock half-adjusted.
       const newItems = await buildItems(items);
       const potongan = potonganPersen !== undefined ? Number(potonganPersen) || 0 : existing.potonganPersen ?? 0;
-      const { subtotal, dpp, pajakPersen, pajak, total } = computeTotals(newItems, potongan, await pajakSettings.get());
+      const { subtotal, dpp, pajakPersen, pajak, total } = computeTotals(
+        newItems,
+        potongan,
+        await pajakSettings.get(),
+        bebasPpnEfektif
+      );
 
       await applyStockDelta(existing.items, newItems);
 
@@ -236,12 +246,14 @@ export const invoiceController = {
       patch.potonganPersen = potongan;
       patch.subtotal = subtotal;
       patch.dpp = dpp;
+      patch.bebasPpn = bebasPpnEfektif;
       patch.pajakPersen = pajakPersen;
       patch.pajak = pajak;
       patch.total = total;
       netTotal = Math.max(0, total - (existing.returTotal ?? 0));
-    } else if (potonganPersen !== undefined) {
-      patch.potonganPersen = Number(potonganPersen) || 0;
+    } else {
+      if (potonganPersen !== undefined) patch.potonganPersen = Number(potonganPersen) || 0;
+      if (bebasPpn !== undefined) patch.bebasPpn = bebasPpnEfektif;
     }
 
     if (dibayar !== undefined) {

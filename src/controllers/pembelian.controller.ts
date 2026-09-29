@@ -298,7 +298,7 @@ export const pembelianController = {
     // it'll look orphaned if the pembelian is recreated with a different id.
     for (const item of existing.items) {
       await barangStore.updateWithLock(item.itemId, (current) => ({
-        stok: current.stok - item.qty,
+        stok: Math.max(0, current.stok - item.qty),
         stokLokasi: item.lokasi && item.satuan ? adjustStokLokasi(current.stokLokasi, item.lokasi, item.satuan, -item.qty) : current.stokLokasi,
       }));
     }

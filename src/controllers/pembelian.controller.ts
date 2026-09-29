@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { SqliteStore } from "../utils/sqliteStore";
 import { generateKode } from "../utils/kodeGenerator";
-import { PajakSetting, Pembelian, PembelianItem, StatusPembayaran, StatusPembelian } from "../models/types";
+import { PajakSetting, Pembelian, PembelianItem, Satuan, StatusPembayaran, StatusPembelian } from "../models/types";
 import { ApiError } from "../middlewares/errorHandler";
 import { barangStore } from "./barang.controller";
 import { pajakSettings } from "./pengaturan.controller";
@@ -12,7 +12,8 @@ const store = pembelianStore;
 
 const VALID_STATUS: StatusPembelian[] = ["selesai", "draft", "dibatalkan"];
 
-async function resolveItems(rawItems: unknown): Promise<PembelianItem[]> {
+/** Validates and builds item snapshots WITHOUT touching stock, so callers can fail before mutating anything. */
+async function buildItems(rawItems: unknown): Promise<PembelianItem[]> {
   if (!Array.isArray(rawItems) || rawItems.length === 0) {
     throw new ApiError(400, "items tidak boleh kosong");
   }
@@ -30,18 +31,18 @@ async function resolveItems(rawItems: unknown): Promise<PembelianItem[]> {
       satuan?: string;
     };
     if (!input.itemId) throw new ApiError(400, "Setiap item harus memiliki itemId");
+    if (!input.lokasi) throw new ApiError(400, "Setiap item harus memiliki lokasi");
 
     const qty = Number(input.qty) || 1;
     const diskonTipe: "persen" | "rupiah" = input.diskonTipe === "rupiah" ? "rupiah" : "persen";
     const diskonPersen = Number(input.diskonPersen) || 0;
     const diskonRp = Number(input.diskonRp) || 0;
     const hargaOverride = Number(input.hargaSatuan) > 0 ? Number(input.hargaSatuan) : undefined;
-    const lokasi = input.lokasi || undefined;
-    const satuan = input.satuan || undefined;
+    const lokasi = input.lokasi;
 
     const barang = await barangStore.findById(input.itemId);
     if (!barang) throw new ApiError(400, `Barang dengan id ${input.itemId} tidak ditemukan`);
-    await barangStore.updateWithLock(barang.id, (current) => ({ stok: current.stok + qty }));
+    const satuan = input.satuan || barang.satuan;
     result.push({
       itemId: barang.id,
       nama: barang.nama,
@@ -56,6 +57,66 @@ async function resolveItems(rawItems: unknown): Promise<PembelianItem[]> {
     });
   }
   return result;
+}
+
+/** Bumps stokLokasi[lokasi+satuan] by delta (negative to subtract), creating the entry if it
+ * doesn't exist yet. Mirrors penerimaanBarang.controller.ts's applyStockIn so a purchase is
+ * tracked per-location the same way a goods receipt is. */
+function adjustStokLokasi(
+  stokLokasi: { satuan: Satuan; lokasi: string; rak?: string; jumlah: number; stokMinimum?: number; stokMaksimum?: number }[],
+  lokasi: string,
+  satuan: string,
+  delta: number
+) {
+  const idx = stokLokasi.findIndex((sl) => sl.lokasi === lokasi && sl.satuan === satuan);
+  if (idx === -1) {
+    if (delta <= 0) return stokLokasi;
+    return [...stokLokasi, { satuan: satuan as Satuan, lokasi, jumlah: delta }];
+  }
+  return stokLokasi.map((sl, i) => (i === idx ? { ...sl, jumlah: Math.max(0, sl.jumlah + delta) } : sl));
+}
+
+async function resolveItems(rawItems: unknown): Promise<PembelianItem[]> {
+  const result = await buildItems(rawItems);
+  for (const item of result) {
+    await barangStore.updateWithLock(item.itemId, (current) => ({
+      stok: current.stok + item.qty,
+      stokLokasi: adjustStokLokasi(current.stokLokasi, item.lokasi!, item.satuan!, item.qty),
+    }));
+  }
+  return result;
+}
+
+/** Applies the net stock delta between a pembelian's old and new item lists, per (barang, lokasi,
+ * satuan) combination, one lock per affected barang. */
+async function applyStockDelta(oldItems: PembelianItem[], newItems: PembelianItem[]) {
+  const byItem = new Map<string, Map<string, { lokasi: string; satuan: string; delta: number }>>();
+
+  function addDelta(item: PembelianItem, sign: 1 | -1) {
+    if (!item.lokasi || !item.satuan) return;
+    const locMap = byItem.get(item.itemId) ?? new Map<string, { lokasi: string; satuan: string; delta: number }>();
+    const key = `${item.lokasi}::${item.satuan}`;
+    const existing = locMap.get(key) ?? { lokasi: item.lokasi, satuan: item.satuan, delta: 0 };
+    existing.delta += sign * item.qty;
+    locMap.set(key, existing);
+    byItem.set(item.itemId, locMap);
+  }
+
+  for (const old of oldItems) addDelta(old, -1);
+  for (const next of newItems) addDelta(next, 1);
+
+  for (const [itemId, locMap] of byItem) {
+    const deltas = Array.from(locMap.values()).filter((d) => d.delta !== 0);
+    if (deltas.length === 0) continue;
+    const totalDelta = deltas.reduce((s, d) => s + d.delta, 0);
+    await barangStore.updateWithLock(itemId, (current) => {
+      let stokLokasi = current.stokLokasi;
+      for (const d of deltas) {
+        stokLokasi = adjustStokLokasi(stokLokasi, d.lokasi, d.satuan, d.delta);
+      }
+      return { stok: current.stok + totalDelta, stokLokasi };
+    });
+  }
 }
 
 function roundToNearest(value: number, step: number) {
@@ -171,7 +232,7 @@ export const pembelianController = {
     const existing = await store.findById(String(req.params.id));
     if (!existing) throw new ApiError(404, "Pembelian tidak ditemukan");
 
-    const { status, dibayar, ...rest } = req.body;
+    const { status, dibayar, items, potonganPersen, bebasPpn, biayaPengiriman, biayaLainnya, ...rest } = req.body;
     const patch: Partial<Pembelian> = { ...rest };
 
     if (status !== undefined) {
@@ -181,9 +242,43 @@ export const pembelianController = {
       patch.status = status;
     }
 
+    let netTotal = pembelianNetTotal(existing);
+    const bebasPpnEfektif = bebasPpn !== undefined ? Boolean(bebasPpn) : existing.bebasPpn ?? false;
+
+    if (items !== undefined) {
+      // Validate/build the new item list BEFORE touching any stock, so a bad itemId can't leave stock half-adjusted.
+      const newItems = await buildItems(items);
+      const potongan = potonganPersen !== undefined ? Number(potonganPersen) || 0 : existing.potonganPersen ?? 0;
+      const ongkir = biayaPengiriman !== undefined ? Number(biayaPengiriman) || 0 : existing.biayaPengiriman ?? 0;
+      const lainnya = biayaLainnya !== undefined ? Number(biayaLainnya) || 0 : existing.biayaLainnya ?? 0;
+      const { subtotal, dpp, pajakPersen, pajak } = computeTotals(newItems, potongan, await pajakSettings.get(), bebasPpnEfektif);
+      const total = dpp + pajak + ongkir + lainnya;
+
+      await applyStockDelta(existing.items, newItems);
+
+      patch.items = newItems;
+      patch.potonganPersen = potongan;
+      patch.subtotal = subtotal;
+      patch.dpp = dpp;
+      patch.bebasPpn = bebasPpnEfektif;
+      patch.pajakPersen = pajakPersen;
+      patch.pajak = pajak;
+      patch.biayaPengiriman = ongkir;
+      patch.biayaLainnya = lainnya;
+      patch.total = total;
+      netTotal = Math.max(0, total - (existing.returTotal ?? 0));
+    } else {
+      if (potonganPersen !== undefined) patch.potonganPersen = Number(potonganPersen) || 0;
+      if (bebasPpn !== undefined) patch.bebasPpn = bebasPpnEfektif;
+      if (biayaPengiriman !== undefined) patch.biayaPengiriman = Number(biayaPengiriman) || 0;
+      if (biayaLainnya !== undefined) patch.biayaLainnya = Number(biayaLainnya) || 0;
+    }
+
     if (dibayar !== undefined) {
       patch.dibayar = Number(dibayar) || 0;
-      patch.statusPembayaran = computeStatusPembayaran(pembelianNetTotal(existing), patch.dibayar);
+      patch.statusPembayaran = computeStatusPembayaran(netTotal, patch.dibayar);
+    } else if (items !== undefined) {
+      patch.statusPembayaran = computeStatusPembayaran(netTotal, existing.dibayar);
     }
 
     const item = await store.update(existing.id, patch);
@@ -191,7 +286,25 @@ export const pembelianController = {
   },
 
   async remove(req: Request, res: Response) {
-    const deleted = await store.delete(String(req.params.id));
+    const existing = await store.findById(String(req.params.id));
+    if (!existing) throw new ApiError(404, "Pembelian tidak ditemukan");
+
+    if (existing.dibayar > 0) {
+      throw new ApiError(400, "Pembelian ini sudah memiliki pembayaran dan tidak bisa dihapus.");
+    }
+    if ((existing.returTotal ?? 0) > 0) {
+      throw new ApiError(400, "Pembelian ini memiliki retur pembelian dan tidak bisa dihapus.");
+    }
+
+    // Deleting an unpaid, unreturned pembelian reverses its stock addition so barang counts stay correct.
+    for (const item of existing.items) {
+      await barangStore.updateWithLock(item.itemId, (current) => ({
+        stok: current.stok - item.qty,
+        stokLokasi: item.lokasi && item.satuan ? adjustStokLokasi(current.stokLokasi, item.lokasi, item.satuan, -item.qty) : current.stokLokasi,
+      }));
+    }
+
+    const deleted = await store.delete(existing.id);
     if (!deleted) throw new ApiError(404, "Pembelian tidak ditemukan");
     res.status(204).send();
   },

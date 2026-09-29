@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { SqliteStore } from "../utils/sqliteStore";
 import { generateKode } from "../utils/kodeGenerator";
-import { Invoice, InvoiceItem, PajakSetting, StatusInvoice, StatusPembayaran } from "../models/types";
+import { Invoice, InvoiceItem, PajakSetting, Satuan, StatusInvoice, StatusPembayaran } from "../models/types";
 import { ApiError } from "../middlewares/errorHandler";
 import { barangStore } from "./barang.controller";
 import { jasaStore } from "./jasa.controller";
@@ -51,7 +51,7 @@ async function buildItems(rawItems: unknown): Promise<InvoiceItem[]> {
         itemId: barang.id,
         nama: barang.nama,
         kode: barang.kode,
-        satuan: input.satuan || undefined,
+        satuan: input.satuan || barang.satuan,
         qty,
         hargaSatuan: hargaOverride ?? barang.hargaJual,
         diskonTipe,
@@ -79,18 +79,55 @@ async function buildItems(rawItems: unknown): Promise<InvoiceItem[]> {
   return result;
 }
 
+/** Bumps stokLokasi[lokasi+satuan] by delta (negative to subtract), creating the entry if it
+ * doesn't exist yet (only when delta is positive -- subtracting from a location that was never
+ * recorded is a safe no-op rather than going negative). Mirrors pembelian.controller.ts's helper
+ * of the same name. */
+function adjustStokLokasi(
+  stokLokasi: { satuan: Satuan; lokasi: string; rak?: string; jumlah: number; stokMinimum?: number; stokMaksimum?: number }[],
+  lokasi: string,
+  satuan: string,
+  delta: number
+) {
+  const idx = stokLokasi.findIndex((sl) => sl.lokasi === lokasi && sl.satuan === satuan);
+  if (idx === -1) {
+    if (delta <= 0) return stokLokasi;
+    return [...stokLokasi, { satuan: satuan as Satuan, lokasi, jumlah: delta }];
+  }
+  return stokLokasi.map((sl, i) => (i === idx ? { ...sl, jumlah: Math.max(0, sl.jumlah + delta) } : sl));
+}
+
 async function resolveItems(rawItems: unknown): Promise<InvoiceItem[]> {
   const result = await buildItems(rawItems);
   for (const item of result) {
     if (item.tipe === "barang") {
-      await barangStore.updateWithLock(item.itemId, (current) => ({ stok: current.stok - item.qty }));
+      await barangStore.updateWithLock(item.itemId, (current) => ({
+        stok: current.stok - item.qty,
+        stokLokasi: item.lokasi && item.satuan ? adjustStokLokasi(current.stokLokasi, item.lokasi, item.satuan, -item.qty) : current.stokLokasi,
+      }));
     }
   }
   return result;
 }
 
-/** Applies the net stock delta between an invoice's old and new item lists, one lock per affected barang. */
+/** Applies the net stock delta between an invoice's old and new item lists, per (barang, lokasi,
+ * satuan) combination, one lock per affected barang. */
 async function applyStockDelta(oldItems: InvoiceItem[], newItems: InvoiceItem[]) {
+  const byItem = new Map<string, Map<string, { lokasi: string; satuan: string; delta: number }>>();
+
+  function addDelta(item: InvoiceItem, sign: 1 | -1) {
+    if (item.tipe !== "barang" || !item.lokasi || !item.satuan) return;
+    const locMap = byItem.get(item.itemId) ?? new Map<string, { lokasi: string; satuan: string; delta: number }>();
+    const key = `${item.lokasi}::${item.satuan}`;
+    const existing = locMap.get(key) ?? { lokasi: item.lokasi, satuan: item.satuan, delta: 0 };
+    existing.delta += sign * item.qty;
+    locMap.set(key, existing);
+    byItem.set(item.itemId, locMap);
+  }
+
+  for (const old of oldItems) addDelta(old, -1);
+  for (const next of newItems) addDelta(next, 1);
+
   const deltaQty = new Map<string, number>();
   for (const old of oldItems) {
     if (old.tipe === "barang") deltaQty.set(old.itemId, (deltaQty.get(old.itemId) ?? 0) - old.qty);
@@ -98,9 +135,20 @@ async function applyStockDelta(oldItems: InvoiceItem[], newItems: InvoiceItem[])
   for (const next of newItems) {
     if (next.tipe === "barang") deltaQty.set(next.itemId, (deltaQty.get(next.itemId) ?? 0) + next.qty);
   }
-  for (const [itemId, delta] of deltaQty) {
-    if (delta === 0) continue;
-    await barangStore.updateWithLock(itemId, (current) => ({ stok: current.stok - delta }));
+
+  const affectedItemIds = new Set([...deltaQty.keys(), ...byItem.keys()]);
+  for (const itemId of affectedItemIds) {
+    const totalDelta = deltaQty.get(itemId) ?? 0;
+    const locMap = byItem.get(itemId);
+    const deltas = locMap ? Array.from(locMap.values()).filter((d) => d.delta !== 0) : [];
+    if (totalDelta === 0 && deltas.length === 0) continue;
+    await barangStore.updateWithLock(itemId, (current) => {
+      let stokLokasi = current.stokLokasi;
+      for (const d of deltas) {
+        stokLokasi = adjustStokLokasi(stokLokasi, d.lokasi, d.satuan, -d.delta);
+      }
+      return { stok: current.stok - totalDelta, stokLokasi };
+    });
   }
 }
 
@@ -281,7 +329,10 @@ export const invoiceController = {
     // Deleting an unpaid, unreturned invoice reverses its stock deduction so barang counts stay correct.
     for (const item of existing.items) {
       if (item.tipe === "barang") {
-        await barangStore.updateWithLock(item.itemId, (current) => ({ stok: current.stok + item.qty }));
+        await barangStore.updateWithLock(item.itemId, (current) => ({
+          stok: current.stok + item.qty,
+          stokLokasi: item.lokasi && item.satuan ? adjustStokLokasi(current.stokLokasi, item.lokasi, item.satuan, item.qty) : current.stokLokasi,
+        }));
       }
     }
 

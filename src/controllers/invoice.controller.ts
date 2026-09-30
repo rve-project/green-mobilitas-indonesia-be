@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { SqliteStore } from "../utils/sqliteStore";
 import { generateKode } from "../utils/kodeGenerator";
-import { Invoice, InvoiceItem, PajakSetting, Satuan, StatusInvoice, StatusPembayaran } from "../models/types";
+import { Invoice, InvoiceItem, PajakSetting, Satuan, StatusInvoice, StatusPekerjaan, StatusPembayaran } from "../models/types";
 import { ApiError } from "../middlewares/errorHandler";
 import { barangStore } from "./barang.controller";
 import { jasaStore } from "./jasa.controller";
@@ -12,6 +12,7 @@ export const invoiceStore = new SqliteStore<Invoice>("invoice");
 const store = invoiceStore;
 
 const VALID_STATUS: StatusInvoice[] = ["selesai", "draft", "dibatalkan"];
+const VALID_STATUS_PEKERJAAN: StatusPekerjaan[] = ["selesai", "belum_selesai"];
 
 /** Validates and builds item snapshots WITHOUT touching stock, so callers can fail before mutating anything. */
 async function buildItems(rawItems: unknown): Promise<InvoiceItem[]> {
@@ -200,10 +201,12 @@ export const invoiceController = {
       tanggal,
       items,
       status,
+      statusPekerjaan,
       dibayar,
       jatuhTempoHari,
       jatuhTempo: jatuhTempoOverride,
       syaratPembayaran,
+      metodePembayaran,
       catatan,
       keluhan,
       potonganPersen,
@@ -242,6 +245,7 @@ export const invoiceController = {
       tanggal: tanggalInvoice,
       jatuhTempo,
       syaratPembayaran: syaratPembayaran || undefined,
+      metodePembayaran: metodePembayaran || undefined,
       catatan: catatan || undefined,
       keluhan: keluhan || undefined,
       items: resolvedItems,
@@ -254,6 +258,8 @@ export const invoiceController = {
       total,
       dibayar: paid,
       status: status && VALID_STATUS.includes(status) ? status : "selesai",
+      statusPekerjaan:
+        statusPekerjaan && VALID_STATUS_PEKERJAAN.includes(statusPekerjaan) ? statusPekerjaan : "selesai",
       statusPembayaran: computeStatusPembayaran(total, paid),
       createdAt: new Date().toISOString(),
     });
@@ -264,7 +270,7 @@ export const invoiceController = {
     const existing = await store.findById(String(req.params.id));
     if (!existing) throw new ApiError(404, "Invoice tidak ditemukan");
 
-    const { status, dibayar, items, potonganPersen, bebasPpn, ...rest } = req.body;
+    const { status, statusPekerjaan, dibayar, items, potonganPersen, bebasPpn, ...rest } = req.body;
     const patch: Partial<Invoice> = { ...rest };
 
     if (status !== undefined) {
@@ -272,6 +278,13 @@ export const invoiceController = {
         throw new ApiError(400, `status harus salah satu dari: ${VALID_STATUS.join(", ")}`);
       }
       patch.status = status;
+    }
+
+    if (statusPekerjaan !== undefined) {
+      if (!VALID_STATUS_PEKERJAAN.includes(statusPekerjaan)) {
+        throw new ApiError(400, `statusPekerjaan harus salah satu dari: ${VALID_STATUS_PEKERJAAN.join(", ")}`);
+      }
+      patch.statusPekerjaan = statusPekerjaan;
     }
 
     let netTotal = invoiceNetTotal(existing);

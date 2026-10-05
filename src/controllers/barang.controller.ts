@@ -296,4 +296,46 @@ export const barangController = {
 
     res.json(summary);
   },
+
+  // One-time fix-up: the business currently runs out of a single physical location, but
+  // several stock-moving flows (and a handful of manual production fixes) never wrote a
+  // matching stokLokasi entry, leaving barang.stok (the flat total) ahead of what
+  // stokLokasi sums to. This tops up "GMI Harapan Indah" by the shortfall so the Stok per
+  // Lokasi report reflects reality, without touching barang whose stokLokasi is already
+  // correct (including ones legitimately spread across other locations).
+  async reconcileStokLokasiPreview(_req: Request, res: Response) {
+    const all = await store.findAll();
+    const items = all
+      .map((b) => {
+        const stokLokasiSum = b.stokLokasi.reduce((s, sl) => s + sl.jumlah, 0);
+        return { id: b.id, kode: b.kode, nama: b.nama, stok: b.stok, stokLokasiSum, selisih: b.stok - stokLokasiSum };
+      })
+      .filter((b) => b.selisih !== 0)
+      .sort((a, b) => a.kode.localeCompare(b.kode));
+    res.json({ count: items.length, items });
+  },
+
+  async reconcileStokLokasi(_req: Request, res: Response) {
+    const TARGET_LOKASI = "GMI Harapan Indah";
+    const all = await store.findAll();
+    const fixed: { kode: string; nama: string; selisih: number }[] = [];
+
+    for (const b of all) {
+      const stokLokasiSum = b.stokLokasi.reduce((s, sl) => s + sl.jumlah, 0);
+      const selisih = b.stok - stokLokasiSum;
+      if (selisih === 0) continue;
+
+      await store.updateWithLock(b.id, (current) => {
+        const idx = current.stokLokasi.findIndex((sl) => sl.lokasi === TARGET_LOKASI && sl.satuan === current.satuan);
+        const stokLokasi =
+          idx === -1
+            ? [...current.stokLokasi, { satuan: current.satuan, lokasi: TARGET_LOKASI, jumlah: Math.max(0, selisih) }]
+            : current.stokLokasi.map((sl, i) => (i === idx ? { ...sl, jumlah: Math.max(0, sl.jumlah + selisih) } : sl));
+        return { stokLokasi };
+      });
+      fixed.push({ kode: b.kode, nama: b.nama, selisih });
+    }
+
+    res.json({ fixed: fixed.length, items: fixed });
+  },
 };

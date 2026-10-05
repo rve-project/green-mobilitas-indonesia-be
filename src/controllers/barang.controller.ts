@@ -56,6 +56,74 @@ async function rawFindAll<T>(table: string): Promise<T[]> {
   return (rows as { data: string }[]).map((row) => JSON.parse(row.data) as T);
 }
 
+interface TransactionData {
+  pembelianAll: { items: PembelianItem[] }[];
+  returPembelianAll: { items: { itemId: string; qty: number }[] }[];
+  invoiceAll: Invoice[];
+  returAll: { items: { itemId: string; qty: number }[] }[];
+  penerimaanAll: { status: string; items: { itemId: string; nama: string; kode: string; satuan: string; jumlah: number; hargaSatuan?: number }[] }[];
+  pengeluaranAll: { status: string; items: { itemId: string; jumlah: number }[] }[];
+}
+
+/** Fetches every stock-affecting transaction table once, so computing replayed stock for many
+ * barang (recalculate-all, orphan scan) doesn't re-query per item. */
+async function fetchTransactionData(): Promise<TransactionData> {
+  const [pembelianAll, returPembelianAll, invoiceAll, returAll, penerimaanAll, pengeluaranAll] = await Promise.all([
+    rawFindAll<{ items: PembelianItem[] }>("pembelian"),
+    rawFindAll<{ items: { itemId: string; qty: number }[] }>("retur_pembelian"),
+    rawFindAll<Invoice>("invoice"),
+    rawFindAll<{ items: { itemId: string; qty: number }[] }>("retur"),
+    rawFindAll<{ status: string; items: { itemId: string; nama: string; kode: string; satuan: string; jumlah: number; hargaSatuan?: number }[] }>(
+      "penerimaan_barang"
+    ),
+    rawFindAll<{ status: string; items: { itemId: string; jumlah: number }[] }>("pengeluaran_barang"),
+  ]);
+  return { pembelianAll, returPembelianAll, invoiceAll, returAll, penerimaanAll, pengeluaranAll };
+}
+
+/** Replays every flow that normally keeps barang.stok in sync (the same set adjustStokLokasi()
+ * covers elsewhere) to compute what this itemId's stock SHOULD be, independent of whatever is
+ * currently stored on the barang record -- the authoritative source is the transaction ledger,
+ * not the cached total. Also recovers a kode/nama/satuan/hargaBeli snapshot, for items that no
+ * longer exist in the catalog at all. */
+function replayStock(itemId: string, data: TransactionData) {
+  let stok = 0;
+  let kode = "";
+  let nama = "";
+  let satuan: Satuan = "PCS";
+  let hargaBeli = 0;
+
+  data.pembelianAll.forEach((p) =>
+    p.items.forEach((it) => {
+      if (it.itemId !== itemId) return;
+      stok += it.qty;
+      kode = it.kode || kode;
+      nama = it.nama;
+      satuan = (it.satuan as Satuan) || satuan;
+      hargaBeli = it.hargaSatuan || hargaBeli;
+    })
+  );
+  data.returPembelianAll.forEach((r) => r.items.forEach((it) => it.itemId === itemId && (stok -= it.qty)));
+  data.invoiceAll.forEach((inv) => inv.items.forEach((it) => it.itemId === itemId && it.tipe === "barang" && (stok -= it.qty)));
+  data.returAll.forEach((r) => r.items.forEach((it) => it.itemId === itemId && (stok += it.qty)));
+  data.penerimaanAll.forEach((pb) => {
+    if (pb.status !== "terposting") return;
+    pb.items.forEach((it) => {
+      if (it.itemId !== itemId) return;
+      stok += it.jumlah;
+      kode = it.kode || kode;
+      nama = it.nama;
+      satuan = (it.satuan as Satuan) || satuan;
+    });
+  });
+  data.pengeluaranAll.forEach((pg) => {
+    if (pg.status !== "terposting") return;
+    pg.items.forEach((it) => it.itemId === itemId && (stok -= it.jumlah));
+  });
+
+  return { stok: Math.max(0, stok), kode, nama, satuan, hargaBeli };
+}
+
 interface OrphanedBarang {
   itemId: string;
   kode: string;
@@ -68,65 +136,28 @@ interface OrphanedBarang {
 /** A "barang" itemId is only ever referenced by Pembelian/PenerimaanBarang if it really was a
  * barang (you can't purchase or receive a jasa) -- so those two are the reliable anchor for
  * "this used to be a real barang that's now missing from the catalog" (most likely deleted
- * after being referenced). Stock is reconstructed by replaying every flow that would normally
- * have kept barang.stok in sync, the same set of flows adjustStokLokasi() covers elsewhere. */
+ * after being referenced). */
 async function findOrphanedBarang(): Promise<OrphanedBarang[]> {
-  const [pembelianAll, returPembelianAll, invoiceAll, returAll, penerimaanAll, pengeluaranAll, allBarang] = await Promise.all([
-    rawFindAll<{ items: PembelianItem[] }>("pembelian"),
-    rawFindAll<{ items: { itemId: string; qty: number }[] }>("retur_pembelian"),
-    rawFindAll<Invoice>("invoice"),
-    rawFindAll<{ items: { itemId: string; qty: number }[] }>("retur"),
-    rawFindAll<{ status: string; items: { itemId: string; nama: string; kode: string; satuan: string; jumlah: number; hargaSatuan?: number }[] }>(
-      "penerimaan_barang"
-    ),
-    rawFindAll<{ status: string; items: { itemId: string; jumlah: number }[] }>("pengeluaran_barang"),
-    store.findAll(),
-  ]);
+  const data = await fetchTransactionData();
+  const allBarang = await store.findAll();
 
   const knownIds = new Set(allBarang.map((b) => b.id));
   const candidateIds = new Set<string>();
-  pembelianAll.forEach((p) => p.items.forEach((it) => candidateIds.add(it.itemId)));
-  penerimaanAll.forEach((pb) => pb.items.forEach((it) => candidateIds.add(it.itemId)));
+  data.pembelianAll.forEach((p) => p.items.forEach((it) => candidateIds.add(it.itemId)));
+  data.penerimaanAll.forEach((pb) => pb.items.forEach((it) => candidateIds.add(it.itemId)));
 
   const orphaned: OrphanedBarang[] = [];
   for (const itemId of candidateIds) {
     if (knownIds.has(itemId)) continue;
-
-    let stok = 0;
-    let kode = "";
-    let nama = "";
-    let satuan: Satuan = "PCS";
-    let hargaBeli = 0;
-
-    pembelianAll.forEach((p) =>
-      p.items.forEach((it) => {
-        if (it.itemId !== itemId) return;
-        stok += it.qty;
-        kode = it.kode || kode;
-        nama = it.nama;
-        satuan = (it.satuan as Satuan) || satuan;
-        hargaBeli = it.hargaSatuan || hargaBeli;
-      })
-    );
-    returPembelianAll.forEach((r) => r.items.forEach((it) => it.itemId === itemId && (stok -= it.qty)));
-    invoiceAll.forEach((inv) => inv.items.forEach((it) => it.itemId === itemId && it.tipe === "barang" && (stok -= it.qty)));
-    returAll.forEach((r) => r.items.forEach((it) => it.itemId === itemId && (stok += it.qty)));
-    penerimaanAll.forEach((pb) => {
-      if (pb.status !== "terposting") return;
-      pb.items.forEach((it) => {
-        if (it.itemId !== itemId) return;
-        stok += it.jumlah;
-        kode = it.kode || kode;
-        nama = it.nama;
-        satuan = (it.satuan as Satuan) || satuan;
-      });
+    const replayed = replayStock(itemId, data);
+    orphaned.push({
+      itemId,
+      kode: replayed.kode || `ORPHAN-${itemId.slice(0, 8)}`,
+      nama: replayed.nama || "(nama tidak diketahui)",
+      satuan: replayed.satuan,
+      hargaBeli: replayed.hargaBeli,
+      stok: replayed.stok,
     });
-    pengeluaranAll.forEach((pg) => {
-      if (pg.status !== "terposting") return;
-      pg.items.forEach((it) => it.itemId === itemId && (stok -= it.jumlah));
-    });
-
-    orphaned.push({ itemId, kode: kode || `ORPHAN-${itemId.slice(0, 8)}`, nama: nama || "(nama tidak diketahui)", satuan, hargaBeli, stok: Math.max(0, stok) });
   }
 
   return orphaned.sort((a, b) => a.kode.localeCompare(b.kode));
@@ -383,18 +414,20 @@ export const barangController = {
     res.json(summary);
   },
 
-  // One-time fix-up: the business currently runs out of a single physical location, but
-  // several stock-moving flows (and a handful of manual production fixes) never wrote a
-  // matching stokLokasi entry, leaving barang.stok (the flat total) ahead of what
-  // stokLokasi sums to. This tops up "GMI Harapan Indah" by the shortfall so the Stok per
-  // Lokasi report reflects reality, without touching barang whose stokLokasi is already
-  // correct (including ones legitimately spread across other locations).
+  // One-time fix-up: barang.stok (the cached flat total) can drift from what the transaction
+  // ledger actually implies -- not just from stokLokasi being incomplete, but from the stored
+  // total itself being stale or wrong (a manual production fix, a bug in some now-fixed flow,
+  // etc). Recomputes the correct value by replaying every Pembelian/Retur/Penjualan/Penerimaan/
+  // Pengeluaran event for each barang, and tops up "GMI Harapan Indah" by the shortfall when it
+  // doesn't match -- without touching barang that are already correct, including ones
+  // legitimately spread across other locations.
   async reconcileStokLokasiPreview(_req: Request, res: Response) {
+    const data = await fetchTransactionData();
     const all = await store.findAll();
     const items = all
       .map((b) => {
-        const stokLokasiSum = b.stokLokasi.reduce((s, sl) => s + sl.jumlah, 0);
-        return { id: b.id, kode: b.kode, nama: b.nama, stok: b.stok, stokLokasiSum, selisih: b.stok - stokLokasiSum };
+        const stokSeharusnya = replayStock(b.id, data).stok;
+        return { id: b.id, kode: b.kode, nama: b.nama, stok: b.stok, stokSeharusnya, selisih: stokSeharusnya - b.stok };
       })
       .filter((b) => b.selisih !== 0)
       .sort((a, b) => a.kode.localeCompare(b.kode));
@@ -402,13 +435,13 @@ export const barangController = {
   },
 
   async reconcileStokLokasi(_req: Request, res: Response) {
-    const TARGET_LOKASI = "GMI Harapan Indah";
+    const data = await fetchTransactionData();
     const all = await store.findAll();
     const fixed: { kode: string; nama: string; selisih: number }[] = [];
 
     for (const b of all) {
-      const stokLokasiSum = b.stokLokasi.reduce((s, sl) => s + sl.jumlah, 0);
-      const selisih = b.stok - stokLokasiSum;
+      const stokSeharusnya = replayStock(b.id, data).stok;
+      const selisih = stokSeharusnya - b.stok;
       if (selisih === 0) continue;
 
       await store.updateWithLock(b.id, (current) => {
@@ -417,7 +450,7 @@ export const barangController = {
           idx === -1
             ? [...current.stokLokasi, { satuan: current.satuan, lokasi: TARGET_LOKASI, jumlah: Math.max(0, selisih) }]
             : current.stokLokasi.map((sl, i) => (i === idx ? { ...sl, jumlah: Math.max(0, sl.jumlah + selisih) } : sl));
-        return { stokLokasi };
+        return { stok: stokSeharusnya, stokLokasi };
       });
       fixed.push({ kode: b.kode, nama: b.nama, selisih });
     }

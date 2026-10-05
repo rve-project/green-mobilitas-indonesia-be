@@ -12,6 +12,8 @@ barangRouter.get("/export", barangController.exportXlsx);
 barangRouter.post("/import", uploadXlsx, barangController.importXlsx);
 barangRouter.get("/stok-lokasi/reconcile-preview", barangController.reconcileStokLokasiPreview);
 barangRouter.post("/stok-lokasi/reconcile", barangController.reconcileStokLokasi);
+barangRouter.get("/orphaned-items/preview", barangController.orphanedItemsPreview);
+barangRouter.post("/orphaned-items/restore", barangController.restoreOrphanedItems);
 barangRouter.get("/", barangController.list);
 barangRouter.get("/:id", barangController.get);
 barangRouter.post("/", barangController.create);

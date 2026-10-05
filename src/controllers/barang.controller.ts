@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
-import { Barang, BarangStokLokasi, BarangUnit, Satuan, SATUAN_OPTIONS } from "../models/types";
+import { Barang, BarangStokLokasi, BarangUnit, Invoice, PembelianItem, Satuan, SATUAN_OPTIONS } from "../models/types";
 import { SqliteStore } from "../utils/sqliteStore";
+import { pool } from "../db";
 import { ApiError } from "../middlewares/errorHandler";
 import { paginate, parsePagination } from "../utils/pagination";
 import { buildExportWorkbook, buildTemplateWorkbook, hasSheet, ImportSummary, parseSheetRows, sendXlsx } from "../utils/excel";
@@ -45,6 +46,91 @@ const TEMPLATE_INSTRUCTIONS = [
 
 export const barangStore = new SqliteStore<Barang>("barang");
 const store = barangStore;
+
+const TARGET_LOKASI = "GMI Harapan Indah";
+
+/** Raw read of another store's table, for transaction types whose store isn't exported from
+ * their own controller -- avoids widening those controllers' public surface just for this. */
+async function rawFindAll<T>(table: string): Promise<T[]> {
+  const [rows] = await pool.query(`SELECT data FROM \`${table}\``);
+  return (rows as { data: string }[]).map((row) => JSON.parse(row.data) as T);
+}
+
+interface OrphanedBarang {
+  itemId: string;
+  kode: string;
+  nama: string;
+  satuan: Satuan;
+  hargaBeli: number;
+  stok: number;
+}
+
+/** A "barang" itemId is only ever referenced by Pembelian/PenerimaanBarang if it really was a
+ * barang (you can't purchase or receive a jasa) -- so those two are the reliable anchor for
+ * "this used to be a real barang that's now missing from the catalog" (most likely deleted
+ * after being referenced). Stock is reconstructed by replaying every flow that would normally
+ * have kept barang.stok in sync, the same set of flows adjustStokLokasi() covers elsewhere. */
+async function findOrphanedBarang(): Promise<OrphanedBarang[]> {
+  const [pembelianAll, returPembelianAll, invoiceAll, returAll, penerimaanAll, pengeluaranAll, allBarang] = await Promise.all([
+    rawFindAll<{ items: PembelianItem[] }>("pembelian"),
+    rawFindAll<{ items: { itemId: string; qty: number }[] }>("retur_pembelian"),
+    rawFindAll<Invoice>("invoice"),
+    rawFindAll<{ items: { itemId: string; qty: number }[] }>("retur"),
+    rawFindAll<{ status: string; items: { itemId: string; nama: string; kode: string; satuan: string; jumlah: number; hargaSatuan?: number }[] }>(
+      "penerimaan_barang"
+    ),
+    rawFindAll<{ status: string; items: { itemId: string; jumlah: number }[] }>("pengeluaran_barang"),
+    store.findAll(),
+  ]);
+
+  const knownIds = new Set(allBarang.map((b) => b.id));
+  const candidateIds = new Set<string>();
+  pembelianAll.forEach((p) => p.items.forEach((it) => candidateIds.add(it.itemId)));
+  penerimaanAll.forEach((pb) => pb.items.forEach((it) => candidateIds.add(it.itemId)));
+
+  const orphaned: OrphanedBarang[] = [];
+  for (const itemId of candidateIds) {
+    if (knownIds.has(itemId)) continue;
+
+    let stok = 0;
+    let kode = "";
+    let nama = "";
+    let satuan: Satuan = "PCS";
+    let hargaBeli = 0;
+
+    pembelianAll.forEach((p) =>
+      p.items.forEach((it) => {
+        if (it.itemId !== itemId) return;
+        stok += it.qty;
+        kode = it.kode || kode;
+        nama = it.nama;
+        satuan = (it.satuan as Satuan) || satuan;
+        hargaBeli = it.hargaSatuan || hargaBeli;
+      })
+    );
+    returPembelianAll.forEach((r) => r.items.forEach((it) => it.itemId === itemId && (stok -= it.qty)));
+    invoiceAll.forEach((inv) => inv.items.forEach((it) => it.itemId === itemId && it.tipe === "barang" && (stok -= it.qty)));
+    returAll.forEach((r) => r.items.forEach((it) => it.itemId === itemId && (stok += it.qty)));
+    penerimaanAll.forEach((pb) => {
+      if (pb.status !== "terposting") return;
+      pb.items.forEach((it) => {
+        if (it.itemId !== itemId) return;
+        stok += it.jumlah;
+        kode = it.kode || kode;
+        nama = it.nama;
+        satuan = (it.satuan as Satuan) || satuan;
+      });
+    });
+    pengeluaranAll.forEach((pg) => {
+      if (pg.status !== "terposting") return;
+      pg.items.forEach((it) => it.itemId === itemId && (stok -= it.jumlah));
+    });
+
+    orphaned.push({ itemId, kode: kode || `ORPHAN-${itemId.slice(0, 8)}`, nama: nama || "(nama tidak diketahui)", satuan, hargaBeli, stok: Math.max(0, stok) });
+  }
+
+  return orphaned.sort((a, b) => a.kode.localeCompare(b.kode));
+}
 
 function normalizeUnits(rawUnits: unknown): BarangUnit[] {
   if (!Array.isArray(rawUnits) || rawUnits.length === 0) {
@@ -337,5 +423,40 @@ export const barangController = {
     }
 
     res.json({ fixed: fixed.length, items: fixed });
+  },
+
+  async orphanedItemsPreview(_req: Request, res: Response) {
+    const orphaned = await findOrphanedBarang();
+    res.json({ count: orphaned.length, items: orphaned });
+  },
+
+  // Re-creates each orphaned barang AT ITS ORIGINAL ID (raw insert, bypassing store.create()'s
+  // random-id generation) so every historical Pembelian/Invoice/etc. that still references that
+  // itemId resolves correctly again, instead of minting a disconnected new record.
+  async restoreOrphanedItems(_req: Request, res: Response) {
+    const orphaned = await findOrphanedBarang();
+    const restored: { kode: string; nama: string; stok: number }[] = [];
+
+    for (const o of orphaned) {
+      const barang: Barang = {
+        id: o.itemId,
+        kode: o.kode,
+        nama: o.nama,
+        kategori: "Lainnya",
+        satuan: o.satuan,
+        units: [{ satuan: o.satuan, hargaBeli: o.hargaBeli, hargaJual: o.hargaBeli, conversionFactor: 1, isDefault: true }],
+        hargaBeli: o.hargaBeli,
+        hargaJual: o.hargaBeli,
+        stok: o.stok,
+        stokLokasi: o.stok > 0 ? [{ satuan: o.satuan, lokasi: TARGET_LOKASI, jumlah: o.stok }] : [],
+        tampilBooking: false,
+        aktif: true,
+        createdAt: new Date().toISOString(),
+      };
+      await pool.query(`INSERT INTO \`barang\` (id, data) VALUES (?, ?)`, [barang.id, JSON.stringify(barang)]);
+      restored.push({ kode: o.kode, nama: o.nama, stok: o.stok });
+    }
+
+    res.json({ restored: restored.length, items: restored });
   },
 };

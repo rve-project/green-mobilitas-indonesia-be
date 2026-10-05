@@ -16,6 +16,7 @@ barangRouter.get("/orphaned-items/preview", barangController.orphanedItemsPrevie
 barangRouter.post("/orphaned-items/restore", barangController.restoreOrphanedItems);
 barangRouter.get("/", barangController.list);
 barangRouter.get("/:id", barangController.get);
+barangRouter.get("/:id/riwayat-stok", barangController.riwayatStok);
 barangRouter.post("/", barangController.create);
 barangRouter.put("/:id", barangController.update);
 barangRouter.delete("/:id", barangController.remove);

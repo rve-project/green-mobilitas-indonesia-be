@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { Barang, BarangStokLokasi, BarangUnit, Invoice, PembelianItem, Satuan, SATUAN_OPTIONS } from "../models/types";
+import { Barang, BarangStokLokasi, BarangUnit, Invoice, PembelianItem, Satuan, SATUAN_OPTIONS, StokOpname } from "../models/types";
 import { SqliteStore } from "../utils/sqliteStore";
 import { pool } from "../db";
 import { ApiError } from "../middlewares/errorHandler";
@@ -458,5 +458,95 @@ export const barangController = {
     }
 
     res.json({ restored: restored.length, items: restored });
+  },
+
+  // Read-only audit trail: every stock-affecting event ever recorded against this barang,
+  // across every flow that touches barang.stok, so a "why is this at 0" question can be
+  // answered by reading the actual history instead of guessing at it.
+  async riwayatStok(req: Request, res: Response) {
+    const id = String(req.params.id);
+    const barang = await store.findById(id);
+    if (!barang) throw new ApiError(404, "Barang tidak ditemukan");
+
+    const [pembelianAll, returPembelianAll, invoiceAll, returAll, penerimaanAll, pengeluaranAll, stokOpnameAll] = await Promise.all([
+      rawFindAll<{ kode: string; tanggal: string; items: PembelianItem[] }>("pembelian"),
+      rawFindAll<{ kode: string; tanggal: string; items: { itemId: string; qty: number }[] }>("retur_pembelian"),
+      rawFindAll<Invoice>("invoice"),
+      rawFindAll<{ kode: string; tanggal: string; items: { itemId: string; qty: number }[] }>("retur"),
+      rawFindAll<{ kode: string; tanggal: string; status: string; items: { itemId: string; jumlah: number; lokasi: string; satuan: string }[] }>(
+        "penerimaan_barang"
+      ),
+      rawFindAll<{ kode: string; tanggal: string; status: string; items: { itemId: string; jumlah: number; lokasi: string }[] }>(
+        "pengeluaran_barang"
+      ),
+      rawFindAll<StokOpname>("stok_opname"),
+    ]);
+
+    interface StokEvent {
+      tanggal: string;
+      tipe: string;
+      kode: string;
+      perubahan: number;
+      keterangan: string;
+    }
+    const events: StokEvent[] = [];
+
+    pembelianAll.forEach((p) =>
+      p.items.forEach((it) => {
+        if (it.itemId !== id) return;
+        events.push({ tanggal: p.tanggal, tipe: "Pembelian", kode: p.kode, perubahan: it.qty, keterangan: `di ${it.lokasi ?? "-"}` });
+      })
+    );
+    returPembelianAll.forEach((r) =>
+      r.items.forEach((it) => {
+        if (it.itemId !== id) return;
+        events.push({ tanggal: r.tanggal, tipe: "Retur Pembelian", kode: r.kode, perubahan: -it.qty, keterangan: "" });
+      })
+    );
+    invoiceAll.forEach((inv) =>
+      inv.items.forEach((it) => {
+        if (it.itemId !== id || it.tipe !== "barang") return;
+        events.push({ tanggal: inv.tanggal, tipe: "Penjualan", kode: inv.kode, perubahan: -it.qty, keterangan: `di ${it.lokasi ?? "-"}` });
+      })
+    );
+    returAll.forEach((r) =>
+      r.items.forEach((it) => {
+        if (it.itemId !== id) return;
+        events.push({ tanggal: r.tanggal, tipe: "Retur Penjualan", kode: r.kode, perubahan: it.qty, keterangan: "" });
+      })
+    );
+    penerimaanAll.forEach((pb) => {
+      if (pb.status !== "terposting") return;
+      pb.items.forEach((it) => {
+        if (it.itemId !== id) return;
+        events.push({ tanggal: pb.tanggal, tipe: "Penerimaan Barang", kode: pb.kode, perubahan: it.jumlah, keterangan: `di ${it.lokasi}` });
+      });
+    });
+    pengeluaranAll.forEach((pg) => {
+      if (pg.status !== "terposting") return;
+      pg.items.forEach((it) => {
+        if (it.itemId !== id) return;
+        events.push({ tanggal: pg.tanggal, tipe: "Pengeluaran Barang", kode: pg.kode, perubahan: -it.jumlah, keterangan: `di ${it.lokasi}` });
+      });
+    });
+    stokOpnameAll.forEach((so) =>
+      so.items.forEach((it) => {
+        if (it.itemId !== id) return;
+        events.push({
+          tanggal: so.tanggal,
+          tipe: "Stok Opname",
+          kode: so.kode,
+          perubahan: it.selisih,
+          keterangan: `Sistem ${it.stokSistem} -> Fisik ${it.stokFisik} di ${so.lokasi}`,
+        });
+      })
+    );
+
+    events.sort((a, b) => new Date(a.tanggal).getTime() - new Date(b.tanggal).getTime());
+
+    res.json({
+      barang: { id: barang.id, kode: barang.kode, nama: barang.nama, stok: barang.stok, stokLokasi: barang.stokLokasi },
+      events,
+    });
   },
 };

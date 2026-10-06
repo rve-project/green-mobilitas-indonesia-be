@@ -12,7 +12,7 @@ export const invoiceStore = new SqliteStore<Invoice>("invoice");
 const store = invoiceStore;
 
 const VALID_STATUS: StatusInvoice[] = ["selesai", "draft", "dibatalkan"];
-const VALID_STATUS_PEKERJAAN: StatusPekerjaan[] = ["selesai", "belum_selesai"];
+const VALID_STATUS_PEKERJAAN: StatusPekerjaan[] = ["antrian", "dikerjakan", "menunggu_sparepart", "selesai", "belum_selesai"];
 
 /** Validates and builds item snapshots WITHOUT touching stock, so callers can fail before mutating anything. */
 async function buildItems(rawItems: unknown): Promise<InvoiceItem[]> {

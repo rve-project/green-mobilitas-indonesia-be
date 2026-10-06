@@ -59,6 +59,22 @@ async function main() {
   console.log("Logging in as superadmin...");
   await login();
 
+  console.log("Seeding lokasi...");
+  await post("/lokasi", {
+    nama: "Gudang Utama",
+    tipe: "gudang",
+    alamat: "Jl. Industri Raya No. 1, Jakarta",
+    kota: "Jakarta",
+    telepon: "021-5550001",
+  });
+  await post("/lokasi", {
+    nama: "Toko Depan",
+    tipe: "toko",
+    alamat: "Jl. Raya Bengkel No. 10, Jakarta",
+    kota: "Jakarta",
+    telepon: "021-5550002",
+  });
+
   console.log("Seeding posisi...");
   const posKepala = await post("/posisi", { nama: "Kepala Bengkel", deskripsi: "Memimpin operasional bengkel" });
   const posMekanik = await post("/posisi", { nama: "Mekanik", deskripsi: "Menangani servis dan perbaikan kendaraan" });
@@ -403,21 +419,21 @@ async function main() {
   const pb1 = await post("/pembelian", {
     supplierId: supSeiji.id,
     items: [
-      { itemId: brgOli.id, qty: 50, diskonPersen: 0 },
-      { itemId: brgFilter.id, qty: 40, diskonPersen: 0 },
+      { itemId: brgOli.id, qty: 50, diskonPersen: 0, lokasi: "Gudang Utama" },
+      { itemId: brgFilter.id, qty: 40, diskonPersen: 0, lokasi: "Gudang Utama" },
     ],
     dibayar: 2750000,
   });
   const pb2 = await post("/pembelian", {
     supplierId: supCotama.id,
-    items: [{ itemId: brgKampas.id, qty: 30, diskonPersen: 0 }],
+    items: [{ itemId: brgKampas.id, qty: 30, diskonPersen: 0, lokasi: "Gudang Utama" }],
     dibayar: 700000,
   });
   const pb3 = await post("/pembelian", {
     supplierId: supAtkMu.id,
     items: [
-      { itemId: brgBusi.id, qty: 60, diskonPersen: 0 },
-      { itemId: brgAki.id, qty: 15, diskonPersen: 0 },
+      { itemId: brgBusi.id, qty: 60, diskonPersen: 0, lokasi: "Gudang Utama" },
+      { itemId: brgAki.id, qty: 15, diskonPersen: 0, lokasi: "Gudang Utama" },
     ],
     dibayar: 0,
   });

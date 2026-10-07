@@ -174,7 +174,13 @@ export type StatusPembayaran = "lunas" | "belum_dibayar" | "dibayar_setengah";
 // "belum_selesai" is a legacy value kept only so old stored invoices still read back as a
 // valid status -- new writes always use one of the four granular values below (the frontend
 // treats legacy "belum_selesai" as equivalent to "antrian" for display/grouping).
-export type StatusPekerjaan = "antrian" | "dikerjakan" | "menunggu_sparepart" | "selesai" | "belum_selesai";
+export type StatusPekerjaan =
+  | "antrian"
+  | "dikerjakan"
+  | "menunggu_sparepart"
+  | "selesai"
+  | "diterima_customer"
+  | "belum_selesai";
 
 export interface InvoiceItem {
   tipe: PaketItemTipe;

@@ -3,7 +3,7 @@ import { SqliteStore } from "../utils/sqliteStore";
 import { generateKode } from "../utils/kodeGenerator";
 import { ReturPembelian, ReturPembelianItem } from "../models/types";
 import { ApiError } from "../middlewares/errorHandler";
-import { computeStatusPembayaran, pembelianNetTotal, pembelianStore } from "./pembelian.controller";
+import { adjustStokLokasi, computeStatusPembayaran, pembelianNetTotal, pembelianStore } from "./pembelian.controller";
 import { barangStore } from "./barang.controller";
 import { supplierStore } from "./supplier.controller";
 
@@ -54,7 +54,16 @@ async function resolveItems(pembelianId: string, rawItems: unknown): Promise<Ret
     }
     const qty = Number(input.qty) || 1;
 
-    await barangStore.updateWithLock(pembelianItem.itemId, (current) => ({ stok: current.stok - qty }));
+    // Previously only touched the flat `stok` total, leaving stokLokasi untouched --
+    // every purchase return permanently desynced the two from then on, since nothing else
+    // ever reconciles them against each other on its own.
+    await barangStore.updateWithLock(pembelianItem.itemId, (current) => ({
+      stok: Math.max(0, current.stok - qty),
+      stokLokasi:
+        pembelianItem.lokasi && pembelianItem.satuan
+          ? adjustStokLokasi(current.stokLokasi, pembelianItem.lokasi, pembelianItem.satuan, -qty)
+          : current.stokLokasi,
+    }));
 
     result.push({ itemId: pembelianItem.itemId, nama: pembelianItem.nama, qty, hargaSatuan: pembelianItem.hargaSatuan });
   }

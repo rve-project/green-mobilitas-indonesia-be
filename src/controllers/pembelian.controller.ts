@@ -62,7 +62,7 @@ async function buildItems(rawItems: unknown): Promise<PembelianItem[]> {
 /** Bumps stokLokasi[lokasi+satuan] by delta (negative to subtract), creating the entry if it
  * doesn't exist yet. Mirrors penerimaanBarang.controller.ts's applyStockIn so a purchase is
  * tracked per-location the same way a goods receipt is. */
-function adjustStokLokasi(
+export function adjustStokLokasi(
   stokLokasi: { satuan: Satuan; lokasi: string; rak?: string; jumlah: number; stokMinimum?: number; stokMaksimum?: number }[],
   lokasi: string,
   satuan: string,

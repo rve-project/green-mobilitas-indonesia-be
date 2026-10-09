@@ -134,7 +134,7 @@ export const penerimaanBarangController = {
           const stokLokasi = current.stokLokasi
             .map((sl) => (sl.lokasi === item.lokasi && sl.satuan === item.satuan ? { ...sl, jumlah: sl.jumlah - item.jumlah } : sl))
             .filter((sl) => sl.jumlah > 0);
-          return { stok: current.stok - item.jumlah, stokLokasi };
+          return { stok: Math.max(0, current.stok - item.jumlah), stokLokasi };
         });
       }
     }

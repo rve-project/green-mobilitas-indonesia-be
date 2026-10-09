@@ -77,7 +77,11 @@ async function applyStockOut(items: PengeluaranBarangItem[]) {
       const stokLokasi = current.stokLokasi.map((sl) =>
         sl.lokasi === item.lokasi && sl.satuan === item.satuan ? { ...sl, jumlah: sl.jumlah - item.jumlah } : sl
       );
-      return { stok: current.stok - item.jumlah, stokLokasi };
+      // Already validated against the location's own qty above, but the flat total can
+      // still be stale relative to it (e.g. from the same gap this clamp just closed in
+      // invoice/penerimaan-barang's own stock math) -- flooring here too stops that drift
+      // from compounding instead of fixing it.
+      return { stok: Math.max(0, current.stok - item.jumlah), stokLokasi };
     });
   }
 }

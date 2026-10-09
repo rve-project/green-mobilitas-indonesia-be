@@ -110,7 +110,11 @@ async function resolveItems(rawItems: unknown): Promise<InvoiceItem[]> {
   for (const item of result) {
     if (item.tipe === "barang") {
       await barangStore.updateWithLock(item.itemId, (current) => ({
-        stok: current.stok - item.qty,
+        // Floored at 0 -- same as adjustStokLokasi's own per-location math just below.
+        // Without this, selling more than what's on record (stale/incomplete historical
+        // stock, concurrent sales, etc.) pushed the flat total negative while the
+        // per-location figure stayed floored, permanently desyncing the two.
+        stok: Math.max(0, current.stok - item.qty),
         stokLokasi: item.lokasi && item.satuan ? adjustStokLokasi(current.stokLokasi, item.lokasi, item.satuan, -item.qty) : current.stokLokasi,
       }));
     }
@@ -155,7 +159,7 @@ async function applyStockDelta(oldItems: InvoiceItem[], newItems: InvoiceItem[])
       for (const d of deltas) {
         stokLokasi = adjustStokLokasi(stokLokasi, d.lokasi, d.satuan, -d.delta);
       }
-      return { stok: current.stok - totalDelta, stokLokasi };
+      return { stok: Math.max(0, current.stok - totalDelta), stokLokasi };
     });
   }
 }

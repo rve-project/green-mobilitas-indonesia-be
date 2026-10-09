@@ -49,6 +49,12 @@ const store = barangStore;
 
 const TARGET_LOKASI = "GMI Harapan Indah";
 
+/** The qty this barang's stokLokasi records at the default location -- 0 if it's never
+ * been tracked there at all, matching how a missing entry already reads everywhere else. */
+function lokasiQty(b: Barang): number {
+  return b.stokLokasi.find((sl) => sl.lokasi === TARGET_LOKASI)?.jumlah ?? 0;
+}
+
 /** Raw read of another store's table, for transaction types whose store isn't exported from
  * their own controller -- avoids widening those controllers' public surface just for this. */
 async function rawFindAll<T>(table: string): Promise<T[]> {
@@ -427,9 +433,21 @@ export const barangController = {
     const items = all
       .map((b) => {
         const stokSeharusnya = replayStock(b.id, data).stok;
-        return { id: b.id, kode: b.kode, nama: b.nama, stok: b.stok, stokSeharusnya, selisih: stokSeharusnya - b.stok };
+        return {
+          id: b.id,
+          kode: b.kode,
+          nama: b.nama,
+          stok: b.stok,
+          stokSeharusnya,
+          selisih: stokSeharusnya - b.stok,
+          lokasiMismatch: lokasiQty(b) !== stokSeharusnya,
+        };
       })
-      .filter((b) => b.selisih !== 0)
+      // A barang also needs fixing if ONLY its per-location figure is out of sync, even
+      // when the flat `stok` already happens to match -- otherwise this preview (and the
+      // apply loop below) silently skips it, leaving Stok per Lokasi showing the wrong
+      // number forever since nothing else ever re-checks that figure on its own.
+      .filter((b) => b.selisih !== 0 || b.lokasiMismatch)
       .sort((a, b) => a.kode.localeCompare(b.kode));
     res.json({ count: items.length, items });
   },
@@ -442,7 +460,7 @@ export const barangController = {
     for (const b of all) {
       const stokSeharusnya = replayStock(b.id, data).stok;
       const selisih = stokSeharusnya - b.stok;
-      if (selisih === 0) continue;
+      if (selisih === 0 && lokasiQty(b) === stokSeharusnya) continue;
 
       await store.updateWithLock(b.id, (current) => {
         // Set the target location's qty to match stokSeharusnya directly, not "add the

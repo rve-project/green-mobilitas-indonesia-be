@@ -445,11 +445,18 @@ export const barangController = {
       if (selisih === 0) continue;
 
       await store.updateWithLock(b.id, (current) => {
+        // Set the target location's qty to match stokSeharusnya directly, not "add the
+        // flat total's delta to whatever's already there" -- stokLokasi can already be
+        // wrong by a DIFFERENT amount than the flat stok (it floors at 0 independently,
+        // the flat total didn't until this was fixed), so adding the same delta to both
+        // double-counted the gap instead of closing it. This still assumes a barang has
+        // only ever been tracked at the one default location, true for every barang in
+        // this app so far.
         const idx = current.stokLokasi.findIndex((sl) => sl.lokasi === TARGET_LOKASI && sl.satuan === current.satuan);
         const stokLokasi =
           idx === -1
-            ? [...current.stokLokasi, { satuan: current.satuan, lokasi: TARGET_LOKASI, jumlah: Math.max(0, selisih) }]
-            : current.stokLokasi.map((sl, i) => (i === idx ? { ...sl, jumlah: Math.max(0, sl.jumlah + selisih) } : sl));
+            ? [...current.stokLokasi, { satuan: current.satuan, lokasi: TARGET_LOKASI, jumlah: stokSeharusnya }]
+            : current.stokLokasi.map((sl, i) => (i === idx ? { ...sl, jumlah: stokSeharusnya } : sl));
         return { stok: stokSeharusnya, stokLokasi };
       });
       fixed.push({ kode: b.kode, nama: b.nama, selisih });

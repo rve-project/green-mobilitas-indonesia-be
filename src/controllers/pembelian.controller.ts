@@ -124,13 +124,15 @@ function roundToNearest(value: number, step: number) {
   return Math.round(value / step) * step;
 }
 
-function computeTotals(items: PembelianItem[], potonganPersen: number, pajak: PajakSetting, bebasPpn: boolean) {
+function computeTotals(items: PembelianItem[], potonganPersen: number, potonganRp: number, pajak: PajakSetting, bebasPpn: boolean) {
   const subtotal = items.reduce(
     (sum, item) =>
       sum + hitungTotalSetelahDiskon(item.qty * item.hargaSatuan, item.diskonTipe, item.diskonPersen, item.diskonRp ?? 0),
     0
   );
-  const dpp = subtotal * (1 - potonganPersen / 100);
+  // Mirrors retur.controller.ts's computeTotals: percent off first, then a flat rupiah
+  // amount off the result -- the two stack instead of being an either/or choice.
+  const dpp = Math.max(subtotal * (1 - potonganPersen / 100) - potonganRp, 0);
   const pajakPersen = !bebasPpn && pajak.aktif ? pajak.persentase : 0;
   const pajakNominal = roundToNearest(dpp * (pajakPersen / 100), pajak.pembulatan);
   return { subtotal, dpp, pajakPersen, pajak: pajakNominal };
@@ -171,6 +173,7 @@ export const pembelianController = {
       noInvoiceSupplier,
       catatan,
       potonganPersen,
+      potonganRp,
       biayaPengiriman,
       biayaLainnya,
       metodePembayaran,
@@ -181,10 +184,11 @@ export const pembelianController = {
 
     const resolvedItems = await resolveItems(items);
     const potongan = Number(potonganPersen) || 0;
+    const potonganNominal = Number(potonganRp) || 0;
     const ongkir = Number(biayaPengiriman) || 0;
     const lainnya = Number(biayaLainnya) || 0;
     const isBebasPpn = Boolean(bebasPpn);
-    const { subtotal, dpp, pajakPersen, pajak } = computeTotals(resolvedItems, potongan, await pajakSettings.get(), isBebasPpn);
+    const { subtotal, dpp, pajakPersen, pajak } = computeTotals(resolvedItems, potongan, potonganNominal, await pajakSettings.get(), isBebasPpn);
     const total = dpp + pajak + ongkir + lainnya;
     const paid = Number(dibayar) || 0;
 
@@ -212,6 +216,7 @@ export const pembelianController = {
       catatanPembayaran: catatanPembayaran || undefined,
       items: resolvedItems,
       potonganPersen: potongan,
+      potonganRp: potonganNominal,
       subtotal,
       dpp,
       bebasPpn: isBebasPpn,
@@ -232,7 +237,7 @@ export const pembelianController = {
     const existing = await store.findById(String(req.params.id));
     if (!existing) throw new ApiError(404, "Pembelian tidak ditemukan");
 
-    const { status, dibayar, items, potonganPersen, bebasPpn, biayaPengiriman, biayaLainnya, ...rest } = req.body;
+    const { status, dibayar, items, potonganPersen, potonganRp, bebasPpn, biayaPengiriman, biayaLainnya, ...rest } = req.body;
     const patch: Partial<Pembelian> = { ...rest };
 
     if (status !== undefined) {
@@ -249,15 +254,17 @@ export const pembelianController = {
       // Validate/build the new item list BEFORE touching any stock, so a bad itemId can't leave stock half-adjusted.
       const newItems = await buildItems(items);
       const potongan = potonganPersen !== undefined ? Number(potonganPersen) || 0 : existing.potonganPersen ?? 0;
+      const potonganNominal = potonganRp !== undefined ? Number(potonganRp) || 0 : existing.potonganRp ?? 0;
       const ongkir = biayaPengiriman !== undefined ? Number(biayaPengiriman) || 0 : existing.biayaPengiriman ?? 0;
       const lainnya = biayaLainnya !== undefined ? Number(biayaLainnya) || 0 : existing.biayaLainnya ?? 0;
-      const { subtotal, dpp, pajakPersen, pajak } = computeTotals(newItems, potongan, await pajakSettings.get(), bebasPpnEfektif);
+      const { subtotal, dpp, pajakPersen, pajak } = computeTotals(newItems, potongan, potonganNominal, await pajakSettings.get(), bebasPpnEfektif);
       const total = dpp + pajak + ongkir + lainnya;
 
       await applyStockDelta(existing.items, newItems);
 
       patch.items = newItems;
       patch.potonganPersen = potongan;
+      patch.potonganRp = potonganNominal;
       patch.subtotal = subtotal;
       patch.dpp = dpp;
       patch.bebasPpn = bebasPpnEfektif;
@@ -269,6 +276,7 @@ export const pembelianController = {
       netTotal = Math.max(0, total - (existing.returTotal ?? 0));
     } else {
       if (potonganPersen !== undefined) patch.potonganPersen = Number(potonganPersen) || 0;
+      if (potonganRp !== undefined) patch.potonganRp = Number(potonganRp) || 0;
       if (bebasPpn !== undefined) patch.bebasPpn = bebasPpnEfektif;
       if (biayaPengiriman !== undefined) patch.biayaPengiriman = Number(biayaPengiriman) || 0;
       if (biayaLainnya !== undefined) patch.biayaLainnya = Number(biayaLainnya) || 0;

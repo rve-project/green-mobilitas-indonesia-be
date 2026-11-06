@@ -15,9 +15,12 @@ const VALID_STATUS: StatusInvoice[] = ["selesai", "draft", "dibatalkan"];
 const VALID_STATUS_PEKERJAAN: StatusPekerjaan[] = [
   "antrian",
   "dikerjakan",
-  "menunggu_sparepart",
+  "inden_part",
+  "pending_part",
+  "part_susulan",
   "selesai",
   "diterima_customer",
+  "menunggu_sparepart",
   "belum_selesai",
 ];
 

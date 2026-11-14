@@ -4,7 +4,15 @@ import { SqliteStore } from "../utils/sqliteStore";
 import { pool } from "../db";
 import { ApiError } from "../middlewares/errorHandler";
 import { paginate, parsePagination } from "../utils/pagination";
-import { buildExportWorkbook, buildTemplateWorkbook, hasSheet, ImportSummary, parseSheetRows, sendXlsx } from "../utils/excel";
+import {
+  buildExportWorkbook,
+  buildMultiSheetWorkbook,
+  buildTemplateWorkbook,
+  hasSheet,
+  ImportSummary,
+  parseSheetRows,
+  sendXlsx,
+} from "../utils/excel";
 import { ensureLookup } from "../utils/ensureLookup";
 import { ensureSupplier, supplierStore } from "./supplier.controller";
 import { importJasaRows } from "./jasa.controller";
@@ -332,6 +340,24 @@ export const barangController = {
     );
     const buffer = buildExportWorkbook("Items", TEMPLATE_HEADERS, rows);
     sendXlsx(res, buffer, "data-barang.xlsx");
+  },
+
+  /** Stateless multi-sheet export: the caller (e.g. the per-item riwayat transaksi cetak page)
+   * already has the filtered rows in hand client-side, so this just builds the workbook --
+   * same shape as laporanController.exportXlsx but for more than one sheet at once. */
+  async exportRiwayat(req: Request, res: Response) {
+    const { sheets, filename } = req.body as {
+      sheets?: { name: string; headers: string[]; rows: (string | number)[][] }[];
+      filename?: string;
+    };
+    if (!Array.isArray(sheets) || sheets.length === 0) throw new ApiError(400, "sheets wajib diisi");
+    for (const sheet of sheets) {
+      if (!sheet.name || !Array.isArray(sheet.headers) || !Array.isArray(sheet.rows)) {
+        throw new ApiError(400, "setiap sheet wajib punya name, headers, dan rows");
+      }
+    }
+    const buffer = buildMultiSheetWorkbook(sheets.map((s) => ({ ...s, name: s.name.slice(0, 31) })));
+    sendXlsx(res, buffer, filename || "export.xlsx");
   },
 
   async importXlsx(req: Request, res: Response) {

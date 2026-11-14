@@ -413,18 +413,25 @@ export const barangController = {
           units: [unit],
           hargaBeli,
           hargaJual,
-          stok: stokAwal,
-          stokLokasi,
           tampilBooking: (row["Tampil di Booking (Ya/Tidak)"] || "").toLowerCase() === "ya",
           aktif: (row["Aktif (Ya/Tidak)"] || "").toLowerCase() !== "tidak",
         };
 
         if (existing) {
+          // "Stok Awal" is only ever a starting point for a brand-new item -- stock on an
+          // existing item moves exclusively through real stock documents (pembelian, faktur
+          // penjualan, penerimaan/pengeluaran barang, stok opname), never silently reset by
+          // re-importing the catalog, so `stok`/`stokLokasi` are deliberately left out of the patch.
           const updated = (await store.update(existing.id, barangData))!;
           barangByKode.set(kode.toLowerCase(), updated);
           summary.updated = (summary.updated ?? 0) + 1;
         } else {
-          const created = await store.create({ ...barangData, createdAt: new Date().toISOString() });
+          const created = await store.create({
+            ...barangData,
+            stok: stokAwal,
+            stokLokasi,
+            createdAt: new Date().toISOString(),
+          });
           barangByKode.set(kode.toLowerCase(), created);
           summary.created += 1;
         }

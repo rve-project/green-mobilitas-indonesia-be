@@ -9,6 +9,7 @@ barangRouter.use(requireAuth, requireModule("barang-jasa"));
 
 barangRouter.get("/template", barangController.template);
 barangRouter.get("/export", barangController.exportXlsx);
+barangRouter.post("/export-riwayat", barangController.exportRiwayat);
 barangRouter.post("/import", uploadXlsx, barangController.importXlsx);
 barangRouter.get("/stok-lokasi/reconcile-preview", barangController.reconcileStokLokasiPreview);
 barangRouter.post("/stok-lokasi/reconcile", barangController.reconcileStokLokasi);
